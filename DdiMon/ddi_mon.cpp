@@ -567,13 +567,18 @@ _Use_decl_annotations_ static void DdimonpPostNtQuerySystemInformationHandler(
   }
 
   auto next = reinterpret_cast<SystemProcessInformation*>(info.parameters[1]);
+
+  // Workaround for issue #2.
+  if (!UtilIsAccessibleAddress(next)) {
+    return;
+  }
+
   while (next->next_entry_offset) {
     auto curr = next;
     next = reinterpret_cast<SystemProcessInformation*>(
         reinterpret_cast<UCHAR*>(curr) + curr->next_entry_offset);
 
-    // Occasionally, curr->next_entry_offset has a large value which makes next
-    // invalid. The author was not able to figure out the reason and fix of it.
+    // Workaround for issue #2.
     if (!UtilIsAccessibleAddress(next)) {
       return;
     }

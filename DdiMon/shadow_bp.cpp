@@ -66,7 +66,10 @@ static std::unique_ptr<PatchInformation> SbppCreateBreakpoint(
 
 static PatchInformation* SbppFindPatchInfoByAddress(_In_ void* address);
 
-static PatchInformation* SbppFindPatchByPage(_In_ void* address);
+static PatchInformation* SbppFindPatchInfoByPage(_In_ void* address);
+
+static PatchInformation* SbppFindDuplicatedPostPatchInfo(
+    _In_ void* address, _In_ HANDLE target_tid);
 
 static void SbppEmbedBreakpoint(_In_ void* address);
 
@@ -230,8 +233,12 @@ _Use_decl_annotations_ bool SbpHandleBreakpoint(EptData* ept_data,
       __writecr3(guest_cr3);
       info->handler(*info, ept_data, gp_regs, UtilVmRead(VmcsField::kGuestRsp));
       __writecr3(vmm_cr3);
-      SbppDisablePageShadowing(*info, ept_data);
       SbppDeleteBreakpointFromList(*info);
+      // If there is another breakpoint on the same page, mamory shadowing for
+      // the page cannot be deleted.
+      if (!SbppFindPatchInfoByPage(guest_ip)) {
+        SbppDisablePageShadowing(*info, ept_data);
+      }
     } else {
       // It is not. Let it allow to run one instruction without breakpoint
       SbppEnablePageShadowingForRW(*info, ept_data);
@@ -260,7 +267,7 @@ _Use_decl_annotations_ void SbpHandleEptViolation(EptData* ept_data,
   if (!SbppIsSbpActive()) {
     return;
   }
-  const auto info = SbppFindPatchByPage(fault_va);
+  const auto info = SbppFindPatchInfoByPage(fault_va);
   if (!info) {
     return;
   }
@@ -286,6 +293,12 @@ _Use_decl_annotations_ void SbpCreatePreBreakpoint(
 _Use_decl_annotations_ void SbpCreateAndEnablePostBreakpoint(
     void* address, const PatchInformation& info,
     const CapturedParameters& parameters, EptData* ept_data) {
+  auto duplicated_info =
+      SbppFindDuplicatedPostPatchInfo(address, PsGetCurrentThreadId());
+  if (duplicated_info) {
+    duplicated_info->parameters = parameters;
+    return;
+  }
   auto info_for_post = SbppCreatePostBreakpoint(
       address, info, PsGetCurrentThreadId(), parameters);
   auto ptr = info_for_post.get();
@@ -326,7 +339,7 @@ SbppCreatePostBreakpoint(void* address, const PatchInformation& info,
 _Use_decl_annotations_ static std::unique_ptr<PatchInformation>
 SbppCreateBreakpoint(void* address) {
   auto info = std::make_unique<PatchInformation>();
-  auto reusable_info = SbppFindPatchByPage(address);
+  auto reusable_info = SbppFindPatchInfoByPage(address);
   if (reusable_info) {
     // Found an existing brekapoint object targetting the same page as this one.
     // re-use shadow pages.
@@ -356,7 +369,7 @@ SbppCreateBreakpoint(void* address) {
 }
 
 // Find a breakpoint object by address
-_Use_decl_annotations_ static PatchInformation* SbppFindPatchByPage(
+_Use_decl_annotations_ static PatchInformation* SbppFindPatchInfoByPage(
     void* address) {
   ScopedSpinLockAtDpc scoped_lock(&g_sbpp_breakpoints_skinlock);
   auto ptrs = g_sbpp_breakpoints;
@@ -383,6 +396,26 @@ _Use_decl_annotations_ static PatchInformation* SbppFindPatchInfoByAddress(
   auto found = std::find_if(
       ptrs->begin(), ptrs->end(),
       [address](const auto& info) { return info->patch_address == address; });
+  if (found == ptrs->cend()) {
+    return nullptr;
+  }
+  return found->get();
+}
+
+// Find a duplicated post breakpoint object. It is a workaround for the issue
+// #2.
+_Use_decl_annotations_ static PatchInformation* SbppFindDuplicatedPostPatchInfo(
+    void* address, HANDLE target_tid) {
+  ScopedSpinLockAtDpc scoped_lock(&g_sbpp_breakpoints_skinlock);
+  auto ptrs = g_sbpp_breakpoints;
+  NT_ASSERT(ptrs);
+
+  const auto found = std::find_if(
+      ptrs->begin(), ptrs->end(), [address, target_tid](const auto& info) {
+        return (info->type == BreakpointType::kPost &&
+                PAGE_ALIGN(info->patch_address) == PAGE_ALIGN(address) &&
+                info->target_tid == target_tid);
+      });
   if (found == ptrs->cend()) {
     return nullptr;
   }
