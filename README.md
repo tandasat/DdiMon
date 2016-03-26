@@ -43,8 +43,8 @@ the following command, and then restart the system to activate the change:
 
     bcdedit /set testsigning on
 
-Since DdiMon supports only uni-processor systems currently, a system with
-more than one processors must simulate change a number of active processors
+Since DdiMon supports only uni-processor systems currently (#1), a system
+with more than one processors must change a number of active processors
 with below command, and then restart the system to activate the change:
 
     bcdedit /set numproc 1
@@ -252,7 +252,7 @@ Supported Platforms
 ----------------------
 - x86 and x64 Windows 7, 8.1 and 10
 - The system must support the Intel VT-x and EPT technology
-- Uni-processor systems (the author is working for taking off this limitation)
+- Uni-processor systems (the author is working for taking off this limitation #1)
 
 
 License
