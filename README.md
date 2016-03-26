@@ -43,6 +43,12 @@ the following command, and then restart the system to activate the change:
 
     bcdedit /set testsigning on
 
+Since DdiMon supports only uni-processor systems currently, a system with
+more than one processors must simulate change a number of active processors
+with below command, and then restart the system to activate the change:
+
+    bcdedit /set numproc 1
+
 To install and uninstall the driver, use the 'sc' command. For installation:
 
     >sc create DdiMon type= kernel binPath= C:\Users\user\Desktop\DdiMon.sys
@@ -52,6 +58,8 @@ And for uninstallation:
 
     >sc stop DdiMon
     >sc delete DdiMon
+    >bcdedit /deletevalue numproc
+    >bcdedit /deletevalue testsigning
 
 Note that the system must support the Intel VT-x and EPT technology to
 successfully install the driver.
