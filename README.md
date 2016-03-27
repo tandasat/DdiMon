@@ -28,7 +28,7 @@ section below.
 
 Here is a movie demonstrating that stealth breakpoints allow you to monitor and
 control DDI calls without being notified by PatchGuard.
-- https://www.youtube.com/watch?v=QazCMbVlKCc
+- https://www.youtube.com/watch?v=UflyX3GeYkw
 
 DdiMon is implemented on the top of HyperPlatform. See a project page for
 more details of HyperPlatform:
