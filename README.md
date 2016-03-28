@@ -23,8 +23,8 @@ operations and exposed only on execution of the memory. Therefore, they are
 neither visible nor overwritable from a guest, while they function as breakpoint.
 It is accomplished by making use of EPT allowing you to enforce a guest to
 see a different memory contents from what it would see if EPT is not in use.
-This technique is called memory shadowing. For more details, see the Design
-section below.
+This technique is often called memory shadowing. For more details, see the
+Design section below.
 
 Here is a movie demonstrating that stealth breakpoints allow you to monitor and
 control DDI calls without being notified by PatchGuard.
@@ -114,7 +114,7 @@ Design
 
 In order to set a stealth breakpoint, DdiMon creates a couple of copies of a
 page where the address to set breakpoint belongs to. After DdiMon is initialized,
-those two pages are accessed when a guest, which is any execution but ones by
+those two pages are accessed when a guest, namely anything except for ones by the
 hypervisor, attempts to access to the original page instead. For example, when
 DdiMon sets a stealth breakpoint on 0x1234, actual access is performed as below:
 
@@ -135,34 +135,35 @@ refer to contents of 0xa000 and to disallow read and write access to the page.
 1. With this configuration, any read and write access triggers EPT violation
 VM-exit. Up on the VM-exit, the EPT entry for 0x1000-0x1fff is modified to refer
 to contents of 0xb000 and to allow read and write to the page. And then, sets
-the Monitor Trap Flag (MTF), which works as if the Trap Flag of the flag but not
-visible to a guest so that guest can perform the read or write operation and
-then interrupted by the VMM with MTF VM-exit.
+the Monitor Trap Flag (MTF), which works as if the Trap Flag of the flag register
+but not visible to a guest, so that a guest can perform the read or write
+operation and then interrupted by the hypervisor with MTF VM-exit.
 
-2. After executing a single instruction, guest is interrupted by MTF VM-exit. on
-this VM-exit, the VMM clear the MTF and set the EPT entry to the default state
-so that subsequent execution is done with the contents 0xa000.
+2. After executing a single instruction, a guest is interrupted by MTF VM-exit.
+On this VM-exit, the hypervisor clears the MTF and resets the EPT entry to the
+default state so that subsequent execution is done with the contents of 0xa000.
 
 As a result of this sequence of operations, a guest executed a single
 instruction reading from or writing to 0xb234.
 
 **Scenario: Execute**
 
-Execution is done against contents of 0xa000 without triggering any events at
-this time. It is fine, and how to monitor execution of 0xa234 (0x1234 from
-guest's perspective) is left to developers. One option is installing inline hook
-and transfer to instrumentation code without triggering VM-exit. DdiMon sets
-0xcc to 0xa234 and handles #BP in the VMM instead, as it does not require a
-disassembler. The following steps are how DdiMon monitors execution of 0xa234.
+Execution is done against contents of 0xa000 without triggering any events if
+no other setting is done. It is fine, and how to monitor execution of 0xa234
+(0x1234 from guest's perspective) is left to developers. One option is
+installing inline hook and transfering execution to instrumentation code
+without triggering VM-exit. DdiMon sets 0xcc to 0xa234 and handles #BP in the
+hypervisor instead, just because it does not require a disassembler. The 
+following steps are how DdiMon monitors execution of 0xa234.
 
-1. On #BP VM-exit, the VMM checks if guest IP is 0x1234 first. If so, next, it
-checks if a contents of 0xb234 is 0xcc. If so, that is a breakpoint set by a
-guest and the #BP should be delivered to a guest instead. If not the case, the
-VMM runs a specified handler to instrument the DDI call and sets a new
-breakpoint at a return address if a post handler is given. After that, just 
-like the case of the read and write access, the VMM changes an EPT entry
-corresponds to 0x1000-0x1fff to refer to contents of 0xb000 and sets MTF so 
-that a guest can run an original instruction and be interrupted then.
+1. On #BP VM-exit, the hypervisor checks if guest IP is 0x1234 first. If so, 
+next, it checks if contents of 0xb234 is 0xcc. If so, it is a breakpoint set
+by a guest, and the #BP should be delivered to a guest instead. If not the case, 
+the hypervisor runs a specified handler to instrument the DDI call and sets a 
+new breakpoint at a return address if a post handler is given. After that, just 
+like the case of the read and write access, the hypervisor changes an EPT entry
+corresponds to 0x1000-0x1fff to refer to contents of 0xb000 and sets MTF so that 
+a guest can run an original instruction and be interrupted then.
 
 2. On MTF VM-exit, the exact same operations are done as the case of the read and
 write access.
