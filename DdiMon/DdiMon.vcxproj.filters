@@ -51,6 +51,9 @@
     <ClCompile Include="shadow_bp.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="..\HyperPlatform\HyperPlatform\kernel_stl.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="ddi_mon.h">

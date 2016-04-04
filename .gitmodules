@@ -1,0 +1,6 @@
+[submodule "HyperPlatform"]
+	path = HyperPlatform
+	url = https://github.com/tandasat/HyperPlatform.git
+[submodule "capstone"]
+	path = capstone
+	url = git@github.com:tandasat/capstone.git

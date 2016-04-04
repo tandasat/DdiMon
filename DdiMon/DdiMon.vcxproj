@@ -121,6 +121,7 @@
   <ItemGroup>
     <ClCompile Include="..\HyperPlatform\HyperPlatform\driver.cpp" />
     <ClCompile Include="..\HyperPlatform\HyperPlatform\ept.cpp" />
+    <ClCompile Include="..\HyperPlatform\HyperPlatform\kernel_stl.cpp" />
     <ClCompile Include="..\HyperPlatform\HyperPlatform\log.cpp" />
     <ClCompile Include="..\HyperPlatform\HyperPlatform\performance.cpp" />
     <ClCompile Include="..\HyperPlatform\HyperPlatform\util.cpp" />

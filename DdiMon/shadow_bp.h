@@ -26,31 +26,46 @@
 //
 
 struct EptData;
+struct SbpData;
+struct SharedSbpData;
 
 ////////////////////////////////////////////////////////////////////////////////
 //
 // prototypes
 //
 
-_IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C NTSTATUS SbpInitialization();
+_IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C _In_
+    SharedSbpData* SbpAllocateSharedData();
 
-_IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C NTSTATUS SbpStart();
+_IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C
+    void SbpFreeSharedData(_In_ SharedSbpData* shared_sbp_data);
 
-_IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C void SbpTermination();
+_IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C SbpData* SbpInitialization();
+
+_IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C
+    void SbpTermination(_In_ SbpData* sbp_data);
+
+_IRQL_requires_max_(PASSIVE_LEVEL) NTSTATUS SbpStart();
+
+_IRQL_requires_max_(PASSIVE_LEVEL) NTSTATUS SbpStop();
 
 _IRQL_requires_min_(DISPATCH_LEVEL) void SbpVmCallDisablePageShadowing(
-    EptData* ept_data, void* context);
+    _In_ EptData* ept_data, _In_ void* context);
 
 _IRQL_requires_min_(DISPATCH_LEVEL) NTSTATUS
-    SbpVmCallEnablePageShadowing(EptData* ept_data, void* context);
+    SbpVmCallEnablePageShadowing(_In_ EptData* ept_data, _In_ void* context);
 
 _IRQL_requires_min_(DISPATCH_LEVEL) bool SbpHandleBreakpoint(
+    _In_ SbpData* sbp_data, _In_ SharedSbpData* shared_sbp_data,
+
     _In_ EptData* ept_data, _In_ void* guest_ip, _In_ GpRegisters* gp_regs);
 
 _IRQL_requires_min_(DISPATCH_LEVEL) void SbpHandleMonitorTrapFlag(
+    _In_ SbpData* sbp_data, _In_ SharedSbpData* shared_sbp_data,
     _In_ EptData* ept_data);
 
 _IRQL_requires_min_(DISPATCH_LEVEL) void SbpHandleEptViolation(
+    _In_ SbpData* sbp_data, _In_ SharedSbpData* shared_sbp_data,
     _In_ EptData* ept_data, _In_ void* fault_va);
 
 ////////////////////////////////////////////////////////////////////////////////

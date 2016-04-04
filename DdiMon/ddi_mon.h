@@ -25,13 +25,16 @@
 // types
 //
 
+struct SharedSbpData;
+
 ////////////////////////////////////////////////////////////////////////////////
 //
 // prototypes
 //
 
 _IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C NTSTATUS
-    DdimonInitialization(PDRIVER_OBJECT driver_object);
+    DdimonInitialization(_In_ SharedSbpData* shared_sbp_data,
+                         _In_ PDRIVER_OBJECT driver_object);
 
 _IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C void DdimonTermination();
 

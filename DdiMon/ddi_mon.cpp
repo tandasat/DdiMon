@@ -104,35 +104,35 @@ static ULONG_PTR DdimonpGetCallParameter(_In_ const GpRegisters& gp_regs,
 
 static std::array<char, 5> DdimonpTagToString(_In_ ULONG tag_value);
 
-static void DdimonpPreExQueueWorkItemHandler(_In_ const PatchInformation& info,
-                                             _In_ EptData* ept_data,
-                                             _In_ GpRegisters* gp_regs,
-                                             _In_ ULONG_PTR guest_sp);
+static void DdimonpPreExQueueWorkItemHandler(
+    _In_ SharedSbpData* shared_sbp_data, _In_ const PatchInformation& info,
+    _In_ EptData* ept_data, _In_ GpRegisters* gp_regs, _In_ ULONG_PTR guest_sp);
 
 static void DdimonpPreExAllocatePoolWithTagHandler(
-    _In_ const PatchInformation& info, _In_ EptData* ept_data,
-    _In_ GpRegisters* gp_regs, _In_ ULONG_PTR guest_sp);
+    _In_ SharedSbpData* shared_sbp_data, _In_ const PatchInformation& info,
+    _In_ EptData* ept_data, _In_ GpRegisters* gp_regs, _In_ ULONG_PTR guest_sp);
 
 static void DdimonpPostExAllocatePoolWithTagHandler(
-    _In_ const PatchInformation& info, _In_ EptData* ept_data,
-    _In_ GpRegisters* gp_regs, _In_ ULONG_PTR guest_sp);
+    _In_ SharedSbpData* shared_sbp_data, _In_ const PatchInformation& info,
+    _In_ EptData* ept_data, _In_ GpRegisters* gp_regs, _In_ ULONG_PTR guest_sp);
 
-static void DdimonpPreExFreePoolHandler(_In_ const PatchInformation& info,
+static void DdimonpPreExFreePoolHandler(_In_ SharedSbpData* shared_sbp_data,
+                                        _In_ const PatchInformation& info,
                                         _In_ EptData* ept_data,
                                         _In_ GpRegisters* gp_regs,
                                         _In_ ULONG_PTR guest_sp);
 
 static void DdimonpPreExFreePoolWithTagHandler(
-    _In_ const PatchInformation& info, _In_ EptData* ept_data,
-    _In_ GpRegisters* gp_regs, _In_ ULONG_PTR guest_sp);
+    _In_ SharedSbpData* shared_sbp_data, _In_ const PatchInformation& info,
+    _In_ EptData* ept_data, _In_ GpRegisters* gp_regs, _In_ ULONG_PTR guest_sp);
 
 static void DdimonpPreNtQuerySystemInformationHandler(
-    _In_ const PatchInformation& info, _In_ EptData* ept_data,
-    _In_ GpRegisters* gp_regs, _In_ ULONG_PTR guest_sp);
+    _In_ SharedSbpData* shared_sbp_data, _In_ const PatchInformation& info,
+    _In_ EptData* ept_data, _In_ GpRegisters* gp_regs, _In_ ULONG_PTR guest_sp);
 
 static void DdimonpPostNtQuerySystemInformationHandler(
-    _In_ const PatchInformation& info, _In_ EptData* ept_data,
-    _In_ GpRegisters* gp_regs, _In_ ULONG_PTR guest_sp);
+    _In_ SharedSbpData* shared_sbp_data, _In_ const PatchInformation& info,
+    _In_ EptData* ept_data, _In_ GpRegisters* gp_regs, _In_ ULONG_PTR guest_sp);
 
 #if defined(ALLOC_PRAGMA)
 #pragma alloc_text(INIT, DdimonInitialization)
@@ -150,65 +150,61 @@ static void DdimonpPostNtQuerySystemInformationHandler(
 // An address of PsLoadedModuleList
 static LIST_ENTRY* g_ddimonp_PsLoadedModuleList;
 
+// Defines where to set breakpoints and their handlers
+//
+// Because of simplified imlementation of DdiMon, it is unable to handle any
+// of following exports properly:
+//  - already unmapped exports (eg, ones on the INIT section) because it no
+//    longer exists on memory
+//  - exported data because setting 0xcc does not make any sense in this case
+//  - functions can be called at IRQL higher than DISPATCH_LEVEL because
+//    DdiMon call DDI that cannot be called that IRQL when it handles
+//    breakpoints. Using DDI in a VMM is actually violation of VMM coding best
+//    practice described in HyperPlatform User's Document, but is done to
+//    simplify implementation sine DdiMon is more like demonstration of use of
+//    EPT.
+//  - functions does not comply x64 calling conventions, for example Zw*
+//    functions, because contents of stack do not hold expected values leading
+//    handlers to failure of parameter analysis that may result in bug check.
+//
+// Also the following care should be taken:
+//  - Function parameters may be an user-address space pointer and not
+//    trusted. Even a kernel-address space pointer should not be trusted for
+//    production level security. Vefity and capture all contents from user
+//    surpplied address to VMM, then use them.
+static BreakpointTarget g_ddimonp_breakpoint_targets[] = {
+    {
+        RTL_CONSTANT_STRING(L"EXQUEUEWORKITEM"),
+        DdimonpPreExQueueWorkItemHandler, nullptr,
+    },
+    {
+        RTL_CONSTANT_STRING(L"EXALLOCATEPOOLWITHTAG"),
+        DdimonpPreExAllocatePoolWithTagHandler,
+        DdimonpPostExAllocatePoolWithTagHandler,
+    },
+    {
+        RTL_CONSTANT_STRING(L"EXFREEPOOL"), DdimonpPreExFreePoolHandler,
+        nullptr,
+    },
+    {
+        RTL_CONSTANT_STRING(L"EXFREEPOOLWITHTAG"),
+        DdimonpPreExFreePoolWithTagHandler, nullptr,
+    },
+    {
+        RTL_CONSTANT_STRING(L"NTQUERYSYSTEMINFORMATION"),
+        DdimonpPreNtQuerySystemInformationHandler,
+        DdimonpPostNtQuerySystemInformationHandler,
+    },
+};
+
 ////////////////////////////////////////////////////////////////////////////////
 //
 // implementations
 //
 
 // Initializes DdiMon
-_Use_decl_annotations_ EXTERN_C NTSTATUS
-DdimonInitialization(PDRIVER_OBJECT driver_object) {
-  // Defines where to set breakpoints and their handlers
-  //
-  // Because of simplified imlementation of DdiMon, it is unable to handle any
-  // of following exports properly:
-  //  - already unmapped exports (eg, ones on the INIT section) because it is
-  //    no longer exist on memory
-  //  - exported data because setting 0xcc does not make any sense in this case
-  //  - functions can be called at IRQL higher than DISPATCH_LEVEL because
-  //    DdiMon call DDI that cannot be called that IRQL when it handles
-  //    breakpoints. Using DDI in a VMM is actually violation of VMM coding best
-  //    practice described in HyperPlatform User's Document, but is done to
-  //    simplify implementation sine DdiMon is more like demonstration of use of
-  //    EPT.
-  //  - functions does not comply x64 calling conventions, for example Zw*
-  //    functions, because contents of stack do not hold expected values leading
-  //    handlers to failure of parameter analysis that may result in bug check.
-  //
-  // Also the following care should be taken:
-  //  - Function parameters may be an user-address space pointer and not
-  //  trusted.
-  //    Even a kernel-address space pointer should not be trusted for production
-  //    level security. Vefity and capture all contents from user surpplied
-  //    address to VMM, then use them.
-  BreakpointTarget breakpoint_targets[] = {
-      {
-          RTL_CONSTANT_STRING(L"EXQUEUEWORKITEM"),
-          DdimonpPreExQueueWorkItemHandler, nullptr,
-      },
-      {
-          RTL_CONSTANT_STRING(L"EXALLOCATEPOOLWITHTAG"),
-          DdimonpPreExAllocatePoolWithTagHandler,
-          DdimonpPostExAllocatePoolWithTagHandler,
-      },
-      {
-          RTL_CONSTANT_STRING(L"EXFREEPOOL"), DdimonpPreExFreePoolHandler,
-          nullptr,
-      },
-      {
-          RTL_CONSTANT_STRING(L"EXFREEPOOLWITHTAG"),
-          DdimonpPreExFreePoolWithTagHandler, nullptr,
-      },
-      {
-          RTL_CONSTANT_STRING(L"NTQUERYSYSTEMINFORMATION"),
-          DdimonpPreNtQuerySystemInformationHandler,
-          DdimonpPostNtQuerySystemInformationHandler,
-      },
-      {
-          {}, nullptr, nullptr,  // end of targets
-      },
-  };
-
+_Use_decl_annotations_ EXTERN_C NTSTATUS DdimonInitialization(
+    SharedSbpData* shared_sbp_data, PDRIVER_OBJECT driver_object) {
   HYPERPLATFORM_COMMON_DBG_BREAK();
 
   // Make DdimonpPcToFileHeader() avaialable for use
@@ -218,29 +214,22 @@ DdimonInitialization(PDRIVER_OBJECT driver_object) {
   }
 
   // Get a base address of ntoskrnl
-  void* nt_base = DdimonpPcToFileHeader(KdDebuggerEnabled);
+  auto nt_base = DdimonpPcToFileHeader(KdDebuggerEnabled);
   if (!nt_base) {
     return STATUS_UNSUCCESSFUL;
-  }
-
-  status = SbpInitialization();
-  if (!NT_SUCCESS(status)) {
-    return status;
   }
 
   // Initialize a container of breakpoint objects and create them by enumerating
   // exported symbols by ntoskrnl
   status = DdimonpEnumExportedSymbols(reinterpret_cast<ULONG_PTR>(nt_base),
                                       DdimonpEnumExportedSymbolsCallback,
-                                      breakpoint_targets);
+                                      shared_sbp_data);
   if (!NT_SUCCESS(status)) {
-    SbpTermination();
     return status;
   }
 
   status = SbpStart();
   if (!NT_SUCCESS(status)) {
-    SbpTermination();
     return status;
   }
 
@@ -252,7 +241,7 @@ DdimonInitialization(PDRIVER_OBJECT driver_object) {
 _Use_decl_annotations_ EXTERN_C void DdimonTermination() {
   PAGED_CODE();
   HYPERPLATFORM_COMMON_DBG_BREAK();
-  SbpTermination();
+  SbpStop();
 }
 
 // Saves PsLoadedModuleList that is referenced by DdimonpUnsafePcToFileHeader().
@@ -361,10 +350,7 @@ _Use_decl_annotations_ EXTERN_C static bool DdimonpEnumExportedSymbolsCallback(
   UNICODE_STRING name_u = {};
   RtlInitUnicodeString(&name_u, name);
 
-  // Check if the export name is listed in kDdimonpBreakpointTargets
-  auto targets = reinterpret_cast<BreakpointTarget*>(context);
-  for (auto i = 0ul; /**/; ++i) {
-    auto& target = targets[i];
+  for (auto& target : g_ddimonp_breakpoint_targets) {
     if (target.pre_handler == nullptr) {
       break;
     }
@@ -374,7 +360,8 @@ _Use_decl_annotations_ EXTERN_C static bool DdimonpEnumExportedSymbolsCallback(
     }
 
     // Yes, create a new breakpoint
-    SbpCreatePreBreakpoint(reinterpret_cast<void*>(export_address), target,
+    SbpCreatePreBreakpoint(reinterpret_cast<SharedSbpData*>(context),
+                           reinterpret_cast<void*>(export_address), target,
                            export_name);
     HYPERPLATFORM_LOG_INFO("Breakpoint has been set to %p %s.", export_address,
                            export_name);
@@ -432,8 +419,9 @@ _Use_decl_annotations_ static std::array<char, 5> DdimonpTagToString(
 // Pre-ExQueueWorkItem. Logs if a WorkerRoutine points to where not backed by
 // any image.
 _Use_decl_annotations_ static void DdimonpPreExQueueWorkItemHandler(
-    const PatchInformation& info, EptData* ept_data, GpRegisters* gp_regs,
-    ULONG_PTR guest_sp) {
+    SharedSbpData* shared_sbp_data, const PatchInformation& info,
+    EptData* ept_data, GpRegisters* gp_regs, ULONG_PTR guest_sp) {
+  UNREFERENCED_PARAMETER(shared_sbp_data);
   UNREFERENCED_PARAMETER(ept_data);
 
   // Is inside image?
@@ -454,8 +442,8 @@ _Use_decl_annotations_ static void DdimonpPreExQueueWorkItemHandler(
 // Pre-ExAllocatePoolWithTag. Logs if the DDI is called from where not backed by
 // any image and sets post breakpoint if so.
 _Use_decl_annotations_ static void DdimonpPreExAllocatePoolWithTagHandler(
-    const PatchInformation& info, EptData* ept_data, GpRegisters* gp_regs,
-    ULONG_PTR guest_sp) {
+    SharedSbpData* shared_sbp_data, const PatchInformation& info,
+    EptData* ept_data, GpRegisters* gp_regs, ULONG_PTR guest_sp) {
   // Is inside image?
   auto return_addr = *reinterpret_cast<void**>(guest_sp);
   if (DdimonpPcToFileHeader(return_addr)) {
@@ -476,13 +464,15 @@ _Use_decl_annotations_ static void DdimonpPreExAllocatePoolWithTagHandler(
   CapturedParameters params = {
       static_cast<ULONG_PTR>(pool_type), number_of_bytes, tag,
   };
-  SbpCreateAndEnablePostBreakpoint(return_addr, info, params, ept_data);
+  SbpCreateAndEnablePostBreakpoint(shared_sbp_data, return_addr, info, params,
+                                   ept_data);
 }
 
 // Post-ExAllocatePoolWithTag. Logs a return value of the DDI
 _Use_decl_annotations_ static void DdimonpPostExAllocatePoolWithTagHandler(
-    const PatchInformation& info, EptData* ept_data, GpRegisters* gp_regs,
-    ULONG_PTR guest_sp) {
+    SharedSbpData* shared_sbp_data, const PatchInformation& info,
+    EptData* ept_data, GpRegisters* gp_regs, ULONG_PTR guest_sp) {
+  UNREFERENCED_PARAMETER(shared_sbp_data);
   UNREFERENCED_PARAMETER(ept_data);
   UNREFERENCED_PARAMETER(guest_sp);
 
@@ -491,8 +481,9 @@ _Use_decl_annotations_ static void DdimonpPostExAllocatePoolWithTagHandler(
 
 // Pre-ExFreePool. Logs if the DDI is called from where not backed by any image
 _Use_decl_annotations_ static void DdimonpPreExFreePoolHandler(
-    const PatchInformation& info, EptData* ept_data, GpRegisters* gp_regs,
-    ULONG_PTR guest_sp) {
+    SharedSbpData* shared_sbp_data, const PatchInformation& info,
+    EptData* ept_data, GpRegisters* gp_regs, ULONG_PTR guest_sp) {
+  UNREFERENCED_PARAMETER(shared_sbp_data);
   UNREFERENCED_PARAMETER(ept_data);
 
   // Is inside image?
@@ -509,8 +500,9 @@ _Use_decl_annotations_ static void DdimonpPreExFreePoolHandler(
 // Pre-ExFreePoolWithTag. Logs if the DDI is called from where not backed by
 // any image
 _Use_decl_annotations_ static void DdimonpPreExFreePoolWithTagHandler(
-    const PatchInformation& info, EptData* ept_data, GpRegisters* gp_regs,
-    ULONG_PTR guest_sp) {
+    SharedSbpData* shared_sbp_data, const PatchInformation& info,
+    EptData* ept_data, GpRegisters* gp_regs, ULONG_PTR guest_sp) {
+  UNREFERENCED_PARAMETER(shared_sbp_data);
   UNREFERENCED_PARAMETER(ept_data);
 
   // Is inside image?
@@ -529,8 +521,8 @@ _Use_decl_annotations_ static void DdimonpPreExFreePoolWithTagHandler(
 // Pre-NtQuerySystemInformation. Sets post breakpoint if it is quering a list
 // of processes.
 _Use_decl_annotations_ static void DdimonpPreNtQuerySystemInformationHandler(
-    const PatchInformation& info, EptData* ept_data, GpRegisters* gp_regs,
-    ULONG_PTR guest_sp) {
+    SharedSbpData* shared_sbp_data, const PatchInformation& info,
+    EptData* ept_data, GpRegisters* gp_regs, ULONG_PTR guest_sp) {
   UNREFERENCED_PARAMETER(ept_data);
   UNREFERENCED_PARAMETER(gp_regs);
 
@@ -551,14 +543,16 @@ _Use_decl_annotations_ static void DdimonpPreNtQuerySystemInformationHandler(
       static_cast<ULONG_PTR>(system_information_class), system_information,
       system_information_length, return_length,
   };
-  SbpCreateAndEnablePostBreakpoint(return_addr, info, params, ept_data);
+  SbpCreateAndEnablePostBreakpoint(shared_sbp_data, return_addr, info, params,
+                                   ept_data);
 }
 
 // Post-NtQuerySystemInformation. Unlinks an entry for cmd.exe from a returned
 // result.
 _Use_decl_annotations_ static void DdimonpPostNtQuerySystemInformationHandler(
-    const PatchInformation& info, EptData* ept_data, GpRegisters* gp_regs,
-    ULONG_PTR guest_sp) {
+    SharedSbpData* shared_sbp_data, const PatchInformation& info,
+    EptData* ept_data, GpRegisters* gp_regs, ULONG_PTR guest_sp) {
+  UNREFERENCED_PARAMETER(shared_sbp_data);
   UNREFERENCED_PARAMETER(ept_data);
   UNREFERENCED_PARAMETER(guest_sp);
 

@@ -36,7 +36,8 @@ struct Page;
 struct PatchInformation;
 
 // Breakpoint handler type
-using BreakpointHandlerType = void (*)(const PatchInformation& info,
+using BreakpointHandlerType = void (*)(SharedSbpData* shared_sbp_data,
+                                       const PatchInformation& info,
                                        EptData* ept_data, GpRegisters* gp_reg,
                                        ULONG_PTR guest_sp);
 
@@ -92,17 +93,35 @@ struct PatchInformation {
   std::array<char, 64> name;
 };
 
+struct SharedSbpData {
+  // Holds all currently installed breakpoints
+  std::vector<std::unique_ptr<PatchInformation>> breakpoints;
+
+  // Spin lock for breakpoints
+  KSPIN_LOCK breakpoints_skinlock;
+};
+
+struct SbpData {
+  // Remember a breakpoint hit last
+  const PatchInformation* last_breakpoint;
+
+  // Remember a value of guests eflags.IT
+  bool previouse_interrupt_flag;
+};
+
 ////////////////////////////////////////////////////////////////////////////////
 //
 // prototypes
 //
 
-void SbpCreatePreBreakpoint(_In_ void* address,
+void SbpCreatePreBreakpoint(_In_ SharedSbpData* shared_sbp_data,
+                            _In_ void* address,
                             _In_ const BreakpointTarget& target,
                             _In_ const char* name);
 
 _IRQL_requires_min_(DISPATCH_LEVEL) void SbpCreateAndEnablePostBreakpoint(
-    _In_ void* address, _In_ const PatchInformation& info,
+    _In_ SharedSbpData* shared_sbp_data, _In_ void* address,
+    _In_ const PatchInformation& info,
     _In_ const CapturedParameters& parameters, _In_ EptData* ept_data);
 
 ////////////////////////////////////////////////////////////////////////////////
