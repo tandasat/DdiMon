@@ -79,6 +79,8 @@ struct SystemProcessInformation {
 // prototypes
 //
 
+static void DdimonpFreeAllocatedTrampolineRegions();
+
 _IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C static NTSTATUS
     DdimonpInitializePcToFileHeader(_In_ PDRIVER_OBJECT driver_object);
 
@@ -98,41 +100,21 @@ _IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C
         _In_ PIMAGE_EXPORT_DIRECTORY directory, _In_ ULONG_PTR directory_base,
         _In_ ULONG_PTR directory_end, _In_opt_ void* context);
 
-static ULONG_PTR DdimonpGetCallParameter(_In_ const GpRegisters& gp_regs,
-                                         _In_ ULONG_PTR guest_sp,
-                                         _In_ ULONG n_th_parameter);
-
 static std::array<char, 5> DdimonpTagToString(_In_ ULONG tag_value);
 
-static void DdimonpPreExQueueWorkItemHandler(
-    _In_ SharedSbpData* shared_sbp_data, _In_ const PatchInformation& info,
-    _In_ EptData* ept_data, _In_ GpRegisters* gp_regs, _In_ ULONG_PTR guest_sp);
+static VOID DdimonpHandleExQueueWorkItem(_Inout_ PWORK_QUEUE_ITEM work_item,
+                                         _In_ WORK_QUEUE_TYPE queue_type);
 
-static void DdimonpPreExAllocatePoolWithTagHandler(
-    _In_ SharedSbpData* shared_sbp_data, _In_ const PatchInformation& info,
-    _In_ EptData* ept_data, _In_ GpRegisters* gp_regs, _In_ ULONG_PTR guest_sp);
+static PVOID DdimonpHandleExAllocatePoolWithTag(_In_ POOL_TYPE pool_type,
+                                                _In_ SIZE_T number_of_bytes,
+                                                _In_ ULONG tag);
 
-static void DdimonpPostExAllocatePoolWithTagHandler(
-    _In_ SharedSbpData* shared_sbp_data, _In_ const PatchInformation& info,
-    _In_ EptData* ept_data, _In_ GpRegisters* gp_regs, _In_ ULONG_PTR guest_sp);
-
-static void DdimonpPreExFreePoolHandler(_In_ SharedSbpData* shared_sbp_data,
-                                        _In_ const PatchInformation& info,
-                                        _In_ EptData* ept_data,
-                                        _In_ GpRegisters* gp_regs,
-                                        _In_ ULONG_PTR guest_sp);
-
-static void DdimonpPreExFreePoolWithTagHandler(
-    _In_ SharedSbpData* shared_sbp_data, _In_ const PatchInformation& info,
-    _In_ EptData* ept_data, _In_ GpRegisters* gp_regs, _In_ ULONG_PTR guest_sp);
-
-static void DdimonpPreNtQuerySystemInformationHandler(
-    _In_ SharedSbpData* shared_sbp_data, _In_ const PatchInformation& info,
-    _In_ EptData* ept_data, _In_ GpRegisters* gp_regs, _In_ ULONG_PTR guest_sp);
-
-static void DdimonpPostNtQuerySystemInformationHandler(
-    _In_ SharedSbpData* shared_sbp_data, _In_ const PatchInformation& info,
-    _In_ EptData* ept_data, _In_ GpRegisters* gp_regs, _In_ ULONG_PTR guest_sp);
+static VOID DdimonpHandleExFreePoolWithTag(_Pre_notnull_ PVOID p,
+                                           _In_ ULONG tag);
+static NTSTATUS DdimonpHandleNtQuerySystemInformation(
+    _In_ SystemInformationClass SystemInformationClass,
+    _Inout_ PVOID SystemInformation, _In_ ULONG SystemInformationLength,
+    _Out_opt_ PULONG ReturnLength);
 
 #if defined(ALLOC_PRAGMA)
 #pragma alloc_text(INIT, DdimonInitialization)
@@ -172,28 +154,23 @@ static LIST_ENTRY* g_ddimonp_PsLoadedModuleList;
 //    trusted. Even a kernel-address space pointer should not be trusted for
 //    production level security. Vefity and capture all contents from user
 //    surpplied address to VMM, then use them.
+
 static BreakpointTarget g_ddimonp_breakpoint_targets[] = {
     {
-        RTL_CONSTANT_STRING(L"EXQUEUEWORKITEM"),
-        DdimonpPreExQueueWorkItemHandler, nullptr,
-    },
-    {
-        RTL_CONSTANT_STRING(L"EXALLOCATEPOOLWITHTAG"),
-        DdimonpPreExAllocatePoolWithTagHandler,
-        DdimonpPostExAllocatePoolWithTagHandler,
-    },
-    {
-        RTL_CONSTANT_STRING(L"EXFREEPOOL"), DdimonpPreExFreePoolHandler,
+        RTL_CONSTANT_STRING(L"EXQUEUEWORKITEM"), DdimonpHandleExQueueWorkItem,
         nullptr,
     },
     {
+        RTL_CONSTANT_STRING(L"EXALLOCATEPOOLWITHTAG"),
+        DdimonpHandleExAllocatePoolWithTag, nullptr,
+    },
+    {
         RTL_CONSTANT_STRING(L"EXFREEPOOLWITHTAG"),
-        DdimonpPreExFreePoolWithTagHandler, nullptr,
+        DdimonpHandleExFreePoolWithTag, nullptr,
     },
     {
         RTL_CONSTANT_STRING(L"NTQUERYSYSTEMINFORMATION"),
-        DdimonpPreNtQuerySystemInformationHandler,
-        DdimonpPostNtQuerySystemInformationHandler,
+        DdimonpHandleNtQuerySystemInformation, nullptr,
     },
 };
 
@@ -225,11 +202,13 @@ _Use_decl_annotations_ EXTERN_C NTSTATUS DdimonInitialization(
                                       DdimonpEnumExportedSymbolsCallback,
                                       shared_sbp_data);
   if (!NT_SUCCESS(status)) {
+    DdimonpFreeAllocatedTrampolineRegions();
     return status;
   }
 
   status = SbpStart();
   if (!NT_SUCCESS(status)) {
+    DdimonpFreeAllocatedTrampolineRegions();
     return status;
   }
 
@@ -242,6 +221,20 @@ _Use_decl_annotations_ EXTERN_C void DdimonTermination() {
   PAGED_CODE();
   HYPERPLATFORM_COMMON_DBG_BREAK();
   SbpStop();
+  UtilSleep(500);
+  DdimonpFreeAllocatedTrampolineRegions();
+  HYPERPLATFORM_LOG_INFO("DdiMon has been terminated.");
+}
+
+// Frees trampoline code allocated and stored in g_ddimonp_breakpoint_targets by
+// DdimonpEnumExportedSymbolsCallback()
+/*_Use_decl_annotations_*/ static void DdimonpFreeAllocatedTrampolineRegions() {
+  for (auto& target : g_ddimonp_breakpoint_targets) {
+    if (target.original_call) {
+      ExFreePoolWithTag(target.original_call, kHyperPlatformCommonPoolTag);
+      target.original_call = nullptr;
+    }
+  }
 }
 
 // Saves PsLoadedModuleList that is referenced by DdimonpUnsafePcToFileHeader().
@@ -351,48 +344,18 @@ _Use_decl_annotations_ EXTERN_C static bool DdimonpEnumExportedSymbolsCallback(
   RtlInitUnicodeString(&name_u, name);
 
   for (auto& target : g_ddimonp_breakpoint_targets) {
-    if (target.pre_handler == nullptr) {
-      break;
-    }
-
     if (!FsRtlIsNameInExpression(&target.target_name, &name_u, TRUE, nullptr)) {
       continue;
     }
 
     // Yes, create a new breakpoint
     SbpCreatePreBreakpoint(reinterpret_cast<SharedSbpData*>(context),
-                           reinterpret_cast<void*>(export_address), target,
+                           reinterpret_cast<void*>(export_address), &target,
                            export_name);
     HYPERPLATFORM_LOG_INFO("Breakpoint has been set to %p %s.", export_address,
                            export_name);
   }
   return true;
-}
-
-// Returns a function parameter from a stack pointer
-_Use_decl_annotations_ static ULONG_PTR DdimonpGetCallParameter(
-    const GpRegisters& gp_regs, ULONG_PTR guest_sp, ULONG n_th_parameter) {
-  NT_ASSERT(n_th_parameter);
-
-#if defined(_AMD64_)
-  switch (n_th_parameter) {
-    case 1:
-      return gp_regs.cx;
-    case 2:
-      return gp_regs.dx;
-    case 3:
-      return gp_regs.r8;
-    case 4:
-      return gp_regs.r9;
-    default:
-      return *reinterpret_cast<ULONG_PTR*>(
-          guest_sp + sizeof(void*) * (n_th_parameter - 4));
-  }
-#else
-  UNREFERENCED_PARAMETER(gp_regs);
-  return *reinterpret_cast<ULONG_PTR*>(guest_sp +
-                                       sizeof(void*) * n_th_parameter);
-#endif
 }
 
 // Converts a pool tag in integer to a printable string
@@ -416,166 +379,99 @@ _Use_decl_annotations_ static std::array<char, 5> DdimonpTagToString(
   return str;
 }
 
-// Pre-ExQueueWorkItem. Logs if a WorkerRoutine points to where not backed by
-// any image.
-_Use_decl_annotations_ static void DdimonpPreExQueueWorkItemHandler(
-    SharedSbpData* shared_sbp_data, const PatchInformation& info,
-    EptData* ept_data, GpRegisters* gp_regs, ULONG_PTR guest_sp) {
-  UNREFERENCED_PARAMETER(shared_sbp_data);
-  UNREFERENCED_PARAMETER(ept_data);
-
-  // Is inside image?
-  auto workitem = reinterpret_cast<WORK_QUEUE_ITEM*>(
-      DdimonpGetCallParameter(*gp_regs, guest_sp, 1));
-  if (DdimonpPcToFileHeader(workitem->WorkerRoutine)) {
-    return;
+template <typename T>
+static T DdimonpFindOrignal(T handler) {
+  for (const auto& target : g_ddimonp_breakpoint_targets) {
+    if (target.handler == handler) {
+      NT_ASSERT(target.original_call);
+      return reinterpret_cast<T>(target.original_call);
+    }
   }
-
-  auto queue_type = static_cast<WORK_QUEUE_TYPE>(
-      DdimonpGetCallParameter(*gp_regs, guest_sp, 2));
-  auto return_addr = *reinterpret_cast<void**>(guest_sp);
-  HYPERPLATFORM_LOG_INFO_SAFE(
-      "%s({Routine= %p, Parameter= %p}, %d) returning to %p", info.name.data(),
-      workitem->WorkerRoutine, workitem->Parameter, queue_type, return_addr);
-}
-
-// Pre-ExAllocatePoolWithTag. Logs if the DDI is called from where not backed by
-// any image and sets post breakpoint if so.
-_Use_decl_annotations_ static void DdimonpPreExAllocatePoolWithTagHandler(
-    SharedSbpData* shared_sbp_data, const PatchInformation& info,
-    EptData* ept_data, GpRegisters* gp_regs, ULONG_PTR guest_sp) {
-  // Is inside image?
-  auto return_addr = *reinterpret_cast<void**>(guest_sp);
-  if (DdimonpPcToFileHeader(return_addr)) {
-    return;
-  }
-
-  auto pool_type =
-      static_cast<POOL_TYPE>(DdimonpGetCallParameter(*gp_regs, guest_sp, 1));
-  auto number_of_bytes =
-      static_cast<SIZE_T>(DdimonpGetCallParameter(*gp_regs, guest_sp, 2));
-  auto tag = static_cast<ULONG>(DdimonpGetCallParameter(*gp_regs, guest_sp, 3));
-  HYPERPLATFORM_LOG_INFO_SAFE(
-      "%s(POOL_TYPE= %08x, NumberOfBytes= %08X, Tag= %s) returning to %p",
-      info.name.data(), pool_type, number_of_bytes,
-      DdimonpTagToString(tag).data(), return_addr);
-
-  // Capture parameters and set post breakpoint
-  CapturedParameters params = {
-      static_cast<ULONG_PTR>(pool_type), number_of_bytes, tag,
-  };
-  SbpCreateAndEnablePostBreakpoint(shared_sbp_data, return_addr, info, params,
-                                   ept_data);
-}
-
-// Post-ExAllocatePoolWithTag. Logs a return value of the DDI
-_Use_decl_annotations_ static void DdimonpPostExAllocatePoolWithTagHandler(
-    SharedSbpData* shared_sbp_data, const PatchInformation& info,
-    EptData* ept_data, GpRegisters* gp_regs, ULONG_PTR guest_sp) {
-  UNREFERENCED_PARAMETER(shared_sbp_data);
-  UNREFERENCED_PARAMETER(ept_data);
-  UNREFERENCED_PARAMETER(guest_sp);
-
-  HYPERPLATFORM_LOG_INFO_SAFE("%s(...) => %p", info.name.data(), gp_regs->ax);
-}
-
-// Pre-ExFreePool. Logs if the DDI is called from where not backed by any image
-_Use_decl_annotations_ static void DdimonpPreExFreePoolHandler(
-    SharedSbpData* shared_sbp_data, const PatchInformation& info,
-    EptData* ept_data, GpRegisters* gp_regs, ULONG_PTR guest_sp) {
-  UNREFERENCED_PARAMETER(shared_sbp_data);
-  UNREFERENCED_PARAMETER(ept_data);
-
-  // Is inside image?
-  auto return_addr = *reinterpret_cast<void**>(guest_sp);
-  if (DdimonpPcToFileHeader(return_addr)) {
-    return;
-  }
-
-  auto p = DdimonpGetCallParameter(*gp_regs, guest_sp, 1);
-  HYPERPLATFORM_LOG_INFO_SAFE("%s(P= %p) returning to %p", info.name.data(), p,
-                              return_addr);
+  NT_ASSERT(false);
+  return nullptr;
 }
 
 // Pre-ExFreePoolWithTag. Logs if the DDI is called from where not backed by
 // any image
-_Use_decl_annotations_ static void DdimonpPreExFreePoolWithTagHandler(
-    SharedSbpData* shared_sbp_data, const PatchInformation& info,
-    EptData* ept_data, GpRegisters* gp_regs, ULONG_PTR guest_sp) {
-  UNREFERENCED_PARAMETER(shared_sbp_data);
-  UNREFERENCED_PARAMETER(ept_data);
-
-  // Is inside image?
-  auto return_addr = *reinterpret_cast<void**>(guest_sp);
+_Use_decl_annotations_ static VOID DdimonpHandleExFreePoolWithTag(PVOID p, ULONG tag) {
+  // HYPERPLATFORM_COMMON_DBG_BREAK();
+  const auto original = DdimonpFindOrignal(DdimonpHandleExFreePoolWithTag);
+  original(p, tag);
+  auto return_addr = _ReturnAddress();
   if (DdimonpPcToFileHeader(return_addr)) {
     return;
   }
+  HYPERPLATFORM_LOG_INFO_SAFE(
+      "%ExFreePoolWithTag(P= %p, Tag= %s) returning to %p", p,
+      DdimonpTagToString(tag).data(), return_addr);
+}
 
-  auto p = DdimonpGetCallParameter(*gp_regs, guest_sp, 1);
-  auto tag = static_cast<ULONG>(DdimonpGetCallParameter(*gp_regs, guest_sp, 2));
-  HYPERPLATFORM_LOG_INFO_SAFE("%s(P= %p, Tag= %s) returning to %p",
-                              info.name.data(), p,
-                              DdimonpTagToString(tag).data(), return_addr);
+// Pre-ExQueueWorkItem. Logs if a WorkerRoutine points to where not backed by
+// any image.
+_Use_decl_annotations_ static VOID DdimonpHandleExQueueWorkItem(PWORK_QUEUE_ITEM work_item,
+                                         WORK_QUEUE_TYPE queue_type) {
+  // HYPERPLATFORM_COMMON_DBG_BREAK();
+  const auto original = DdimonpFindOrignal(DdimonpHandleExQueueWorkItem);
+
+  // Is inside image?
+  if (DdimonpPcToFileHeader(work_item->WorkerRoutine)) {
+    original(work_item, queue_type);
+    return;
+  }
+
+  auto return_addr = _ReturnAddress();
+  HYPERPLATFORM_LOG_INFO_SAFE(
+      "ExQueueWorkItem({Routine= %p, Parameter= %p}, %d) returning to %p",
+      work_item->WorkerRoutine, work_item->Parameter, queue_type, return_addr);
+  // DO log
+  // call original
+  // do log
+  original(work_item, queue_type);
+}
+
+// Pre-ExAllocatePoolWithTag. Logs if the DDI is called from where not backed by
+// any image and sets post breakpoint if so.
+_Use_decl_annotations_ static PVOID DdimonpHandleExAllocatePoolWithTag(POOL_TYPE pool_type,
+                                                SIZE_T number_of_bytes,
+                                                ULONG tag) {
+  // HYPERPLATFORM_COMMON_DBG_BREAK();
+  const auto original = DdimonpFindOrignal(DdimonpHandleExAllocatePoolWithTag);
+  const auto result = original(pool_type, number_of_bytes, tag);
+  auto return_addr = _ReturnAddress();
+  if (DdimonpPcToFileHeader(return_addr)) {
+    return result;
+  }
+
+  HYPERPLATFORM_LOG_INFO_SAFE(
+      "ExAllocatePoolWithTag(POOL_TYPE= %08x, NumberOfBytes= %08X, Tag= %s) => "
+      "%p returning to %p",
+      pool_type, number_of_bytes, DdimonpTagToString(tag).data(), result,
+      return_addr);
+  return result;
 }
 
 // Pre-NtQuerySystemInformation. Sets post breakpoint if it is quering a list
 // of processes.
-_Use_decl_annotations_ static void DdimonpPreNtQuerySystemInformationHandler(
-    SharedSbpData* shared_sbp_data, const PatchInformation& info,
-    EptData* ept_data, GpRegisters* gp_regs, ULONG_PTR guest_sp) {
-  UNREFERENCED_PARAMETER(ept_data);
-  UNREFERENCED_PARAMETER(gp_regs);
-
-  auto system_information_class = static_cast<SystemInformationClass>(
-      DdimonpGetCallParameter(*gp_regs, guest_sp, 1));
+_Use_decl_annotations_ static NTSTATUS DdimonpHandleNtQuerySystemInformation(
+    SystemInformationClass system_information_class, PVOID system_information,
+    ULONG system_information_length, PULONG return_length) {
+  // HYPERPLATFORM_COMMON_DBG_BREAK();
+  const auto original =
+      DdimonpFindOrignal(DdimonpHandleNtQuerySystemInformation);
+  const auto result = original(system_information_class, system_information,
+                               system_information_length, return_length);
+  if (!NT_SUCCESS(result)) {
+    return result;
+  }
   if (system_information_class != kSystemProcessInformation) {
-    return;
+    return result;
   }
 
-  auto return_addr = *reinterpret_cast<void**>(guest_sp);
-  auto system_information = DdimonpGetCallParameter(*gp_regs, guest_sp, 2);
-  auto system_information_length =
-      DdimonpGetCallParameter(*gp_regs, guest_sp, 3);
-  auto return_length = DdimonpGetCallParameter(*gp_regs, guest_sp, 4);
-
-  // Capture parameters and set post breakpoint
-  CapturedParameters params = {
-      static_cast<ULONG_PTR>(system_information_class), system_information,
-      system_information_length, return_length,
-  };
-  SbpCreateAndEnablePostBreakpoint(shared_sbp_data, return_addr, info, params,
-                                   ept_data);
-}
-
-// Post-NtQuerySystemInformation. Unlinks an entry for cmd.exe from a returned
-// result.
-_Use_decl_annotations_ static void DdimonpPostNtQuerySystemInformationHandler(
-    SharedSbpData* shared_sbp_data, const PatchInformation& info,
-    EptData* ept_data, GpRegisters* gp_regs, ULONG_PTR guest_sp) {
-  UNREFERENCED_PARAMETER(shared_sbp_data);
-  UNREFERENCED_PARAMETER(ept_data);
-  UNREFERENCED_PARAMETER(guest_sp);
-
-  if (gp_regs->ax != STATUS_SUCCESS) {
-    return;
-  }
-
-  auto next = reinterpret_cast<SystemProcessInformation*>(info.parameters[1]);
-
-  // Workaround for issue #2.
-  if (!UtilIsAccessibleAddress(next)) {
-    return;
-  }
-
+  auto next = reinterpret_cast<SystemProcessInformation*>(system_information);
   while (next->next_entry_offset) {
     auto curr = next;
     next = reinterpret_cast<SystemProcessInformation*>(
         reinterpret_cast<UCHAR*>(curr) + curr->next_entry_offset);
-
-    // Workaround for issue #2.
-    if (!UtilIsAccessibleAddress(next)) {
-      return;
-    }
 
     if (_wcsnicmp(next->image_name.Buffer, L"cmd.exe", 7) == 0) {
       if (next->next_entry_offset) {
@@ -586,4 +482,6 @@ _Use_decl_annotations_ static void DdimonpPostNtQuerySystemInformationHandler(
       next = curr;
     }
   }
+
+  return result;
 }

@@ -55,10 +55,8 @@ _IRQL_requires_min_(DISPATCH_LEVEL) void SbpVmCallDisablePageShadowing(
 _IRQL_requires_min_(DISPATCH_LEVEL) NTSTATUS
     SbpVmCallEnablePageShadowing(_In_ EptData* ept_data, _In_ void* context);
 
-_IRQL_requires_min_(DISPATCH_LEVEL) bool SbpHandleBreakpoint(
-    _In_ SbpData* sbp_data, _In_ SharedSbpData* shared_sbp_data,
-
-    _In_ EptData* ept_data, _In_ void* guest_ip, _In_ GpRegisters* gp_regs);
+_IRQL_requires_min_(DISPATCH_LEVEL) void* SbpHandleBreakpoint(
+    SbpData* sbp_data, SharedSbpData* shared_sbp_data, void* guest_ip);
 
 _IRQL_requires_min_(DISPATCH_LEVEL) void SbpHandleMonitorTrapFlag(
     _In_ SbpData* sbp_data, _In_ SharedSbpData* shared_sbp_data,

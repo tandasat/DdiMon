@@ -101,6 +101,9 @@
     <ClInclude Include="shadow_bp_internal.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="cs_driver.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <MASM Include="..\HyperPlatform\HyperPlatform\Arch\x64\x64.asm">

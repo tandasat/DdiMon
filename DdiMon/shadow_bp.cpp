@@ -14,6 +14,7 @@
 #include "../HyperPlatform/HyperPlatform/log.h"
 #include "../HyperPlatform/HyperPlatform/util.h"
 #include "../HyperPlatform/HyperPlatform/ept.h"
+#include "cs_driver.h"
 
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -55,12 +56,7 @@ class ScopedSpinLockAtDpc {
 
 static std::unique_ptr<PatchInformation> SbppCreatePreBreakpoint(
     _In_ SharedSbpData* shared_sbp_data, _In_ void* address,
-    _In_ const BreakpointTarget& target, _In_ const char* name);
-
-static std::unique_ptr<PatchInformation> SbppCreatePostBreakpoint(
-    _In_ SharedSbpData* shared_sbp_data, _In_ void* address,
-    _In_ const PatchInformation& info, _In_ HANDLE target_tid,
-    _In_ const CapturedParameters& parameters);
+    _In_ BreakpointTarget* target, _In_ const char* name);
 
 static std::unique_ptr<PatchInformation> SbppCreateBreakpoint(
     _In_ SharedSbpData* shared_sbp_data, _In_ void* address);
@@ -71,12 +67,6 @@ static PatchInformation* SbppFindPatchInfoByAddress(
 static PatchInformation* SbppFindPatchInfoByPage(
     _In_ SharedSbpData* shared_sbp_data, _In_ void* address);
 
-static PatchInformation* SbppFindDuplicatedPostPatchInfo(
-    _In_ SharedSbpData* shared_sbp_data, _In_ void* address,
-    _In_ HANDLE target_tid);
-
-static void SbppEmbedBreakpoint(_In_ void* address);
-
 static void SbppEnablePageShadowingForExec(_In_ const PatchInformation& info,
                                            _In_ EptData* ept_data);
 
@@ -85,8 +75,6 @@ static void SbppEnablePageShadowingForRW(_In_ const PatchInformation& info,
 
 static void SbppDisablePageShadowing(_In_ const PatchInformation& info,
                                      _In_ EptData* ept_data);
-
-static bool SbppIsShadowBreakpoint(_In_ const PatchInformation& info);
 
 static void SbppSetMonitorTrapFlag(_In_ SbpData* sbp_data, _In_ bool enable);
 
@@ -121,6 +109,10 @@ static void SbppDeleteBreakpointFromList(_In_ SharedSbpData* shared_sbp_data,
 
 // Initializes DdiMon
 _Use_decl_annotations_ EXTERN_C SharedSbpData* SbpAllocateSharedData() {
+  if (cs_driver_init() != CS_ERR_OK) {
+    return nullptr;
+  }
+
   auto shared_sbp_data = new SharedSbpData();
   KeInitializeSpinLock(&shared_sbp_data->breakpoints_skinlock);
   return shared_sbp_data;
@@ -142,8 +134,8 @@ _Use_decl_annotations_ EXTERN_C void SbpTermination(SbpData* sbp_data) {
   delete sbp_data;
 }
 
+// Enables page shadowing for all breakpoints
 _Use_decl_annotations_ NTSTATUS SbpStart() {
-  // Enables page shadowing for all breakpoints
   return UtilForEachProcessor(
       [](void*) {
         return UtilVmCall(HypercallNumber::kSbpEnablePageShadowing, nullptr);
@@ -151,8 +143,8 @@ _Use_decl_annotations_ NTSTATUS SbpStart() {
       nullptr);
 }
 
+// Disables page shadowing for all breakpoints
 _Use_decl_annotations_ NTSTATUS SbpStop() {
-  // Enables page shadowing for all breakpoints
   return UtilForEachProcessor(
       [](void*) {
         return UtilVmCall(HypercallNumber::kSbpDisablePageShadowing, nullptr);
@@ -187,87 +179,26 @@ _Use_decl_annotations_ void SbpVmCallDisablePageShadowing(EptData* ept_data,
 // so, runs its handler, switchs a page view to read/write shadow page and sets
 // the monitor trap flag to execute only one instruction where is located on the
 // read/write shadow page. Then saves the breakpoint info as the last event.
-_Use_decl_annotations_ bool SbpHandleBreakpoint(SbpData* sbp_data,
-                                                SharedSbpData* shared_sbp_data,
-                                                EptData* ept_data,
-                                                void* guest_ip,
-                                                GpRegisters* gp_regs) {
+_Use_decl_annotations_ void* SbpHandleBreakpoint(SbpData* sbp_data,
+                                                 SharedSbpData* shared_sbp_data,
+                                                 void* guest_ip) {
   if (!SbppIsSbpActive(shared_sbp_data)) {
-    return false;
+    return nullptr;
   }
 
-  ScopedSpinLockAtDpc scoped_lock(&shared_sbp_data->breakpoints_skinlock);
   const auto info = SbppFindPatchInfoByAddress(shared_sbp_data, guest_ip);
   if (!info) {
-    return false;
+    return nullptr;
   }
 
-  if (!SbppIsShadowBreakpoint(*info)) {
-    return false;
-  }
-
-  // DdiMon is unable to handle it
-  if (KeGetCurrentIrql() > DISPATCH_LEVEL) {
-    HYPERPLATFORM_COMMON_BUG_CHECK(HyperPlatformBugCheck::kUnspecified, 0, 0,
-                                   0);
-  }
-
-  // VMM has to change the current CR3 to a guest's CR3 in order to access
-  // memory address because VMM runs with System's CR3 saved in and restored
-  // from VmcsField::kHostCr3, while a guest's CR3 is depends on thread
-  // contexts. Without using guest's CR3, it is likely that any use-address
-  // space is inaccessible from a VMM ending up with a bug check.
-  const auto guest_cr3 = UtilVmRead(VmcsField::kGuestCr3);
-  const auto vmm_cr3 = __readcr3();
-
-  if (info->type == BreakpointType::kPre) {
-    // Pre breakpoint
-    __writecr3(guest_cr3);
-    info->handler(shared_sbp_data, *info, ept_data, gp_regs,
-                  UtilVmRead(VmcsField::kGuestRsp));
-    __writecr3(vmm_cr3);
-    SbppEnablePageShadowingForRW(*info, ept_data);
-    SbppSetMonitorTrapFlag(sbp_data, true);
-    SbppSaveLastPatchInfo(sbp_data, *info);
-
-  } else {
-    // Post breakpoint
-    if (info->target_tid == PsGetCurrentThreadId()) {
-      // It is a target thread. Execute the post handler and let it continue
-      // subsequence instructions.
-      __writecr3(guest_cr3);
-      info->handler(shared_sbp_data, *info, ept_data, gp_regs,
-                    UtilVmRead(VmcsField::kGuestRsp));
-      __writecr3(vmm_cr3);
-      if (IsReleaseBuild()) {
-        SbppDeleteBreakpointFromList(shared_sbp_data, *info);
-      }
-      // If there is another breakpoint on the same page, mamory shadowing for
-      // the page cannot be deleted.
-      if (!SbppFindPatchInfoByPage(shared_sbp_data, guest_ip)) {
-        //SbppDisablePageShadowing(*info, ept_data);
-        SbppEnablePageShadowingForRW(*info, ept_data);
-      }
-      RtlCopyMemory(info->shadow_page_base_for_exec.get()->page +
-        BYTE_OFFSET(info->patch_address),
-        info->patch_address, 1);
-    } else {
-      // It is not. Let it allow to run one instruction without breakpoint
-      SbppEnablePageShadowingForRW(*info, ept_data);
-      SbppSetMonitorTrapFlag(sbp_data, true);
-      SbppSaveLastPatchInfo(sbp_data, *info);
-    }
-  }
-
-  // Yes, it was caused by shadow breakpoint. Do not deliver the #BP to a guest.
-  return true;
+  // HYPERPLATFORM_COMMON_DBG_BREAK();
+  return info->handler;
 }
 
 // Handles MTF VM-exit. Restores the last breakpoint event, re-enables stealth
 // breakpoint and clears MTF;
 _Use_decl_annotations_ void SbpHandleMonitorTrapFlag(
-    SbpData* sbp_data, SharedSbpData* shared_sbp_data,
-    EptData* ept_data) {
+    SbpData* sbp_data, SharedSbpData* shared_sbp_data, EptData* ept_data) {
   NT_VERIFY(SbppIsSbpActive(shared_sbp_data));
 
   const auto info = SbppRestoreLastPatchInfo(sbp_data);
@@ -300,65 +231,91 @@ _Use_decl_annotations_ void SbpHandleEptViolation(
 
 // Creates Pre breakpoint object and adds it to the list
 _Use_decl_annotations_ void SbpCreatePreBreakpoint(
-    SharedSbpData* shared_sbp_data, void* address,
-    const BreakpointTarget& target, const char* name) {
+    SharedSbpData* shared_sbp_data, void* address, BreakpointTarget* target,
+    const char* name) {
   ScopedSpinLockAtDpc scoped_lock(&shared_sbp_data->breakpoints_skinlock);
   auto info = SbppCreatePreBreakpoint(
       shared_sbp_data, reinterpret_cast<void*>(address), target, name);
   SbppAddBreakpointToList(shared_sbp_data, std::move(info));
 }
 
-// Creats Post breakpoint object, adds it to the list and enables it
-_Use_decl_annotations_ void SbpCreateAndEnablePostBreakpoint(
-    SharedSbpData* shared_sbp_data, void* address, const PatchInformation& info,
-    const CapturedParameters& parameters, EptData* ept_data) {
-  auto duplicated_info = SbppFindDuplicatedPostPatchInfo(
-      shared_sbp_data, address, PsGetCurrentThreadId());
-  if (duplicated_info) {
-    duplicated_info->parameters = parameters;
-    return;
-  }
-  auto info_for_post = SbppCreatePostBreakpoint(
-      shared_sbp_data, address, info, PsGetCurrentThreadId(), parameters);
-  auto ptr = info_for_post.get();
-  SbppAddBreakpointToList(shared_sbp_data, std::move(info_for_post));
-  SbppEnablePageShadowingForExec(*ptr, ept_data);
+// A structure reflects inline hook code.
+#include <pshpack1.h>
+#if defined(_AMD64_)
+struct TrampolineCode {
+  UCHAR nop;
+  UCHAR jmp[6];
+  void* FunctionAddress;
+};
+static_assert(sizeof(TrampolineCode) == 15, "Size check");
+
+struct TrampolineCodeNoRead {
+  UCHAR nop;
+  UCHAR push_rax;
+  UCHAR mov_rax[2];
+  void* FunctionAddress;
+  UCHAR xchg_rax_ptr_rsp[4];
+  UCHAR retn;
+};
+static_assert(sizeof(TrampolineCodeNoRead) == 17, "Size check");
+#else
+struct TrampolineCode {
+  UCHAR nop;
+  UCHAR push;
+  void* FunctionAddress;
+  UCHAR ret;
+};
+static_assert(sizeof(TrampolineCode) == 7, "Size check");
+#endif
+#include <poppack.h>
+
+static TrampolineCode DispgpMakeTrampolineCode(void* HookHandler) {
+#if defined(_AMD64_)
+  //          jmp qword ptr [nextline]
+  // nextline:
+  //          dq HookHandler
+  return {
+      0x90,
+      {
+          0xff, 0x25, 0x00, 0x00, 0x00, 0x00,
+      },
+      HookHandler,
+  };
+#else
+  // 6832e30582      push    offset nt!ExFreePoolWithTag + 0x2 (8205e332)
+  // c3              ret
+  return {
+      0x90, 0x68, HookHandler, 0xc3,
+  };
+#endif
 }
+
+// static TrampolineCodeNoRead DispgpMakeTrampolineCodeNoRead(void* HookHandler)
+//{
+//  // 90                                            nop
+//  // 50                                            push    rax
+//  // 48 b8 ff ff ff ff ff ff ff ff                 mov     rax,
+//  0ffffffffffffffffh
+//  // 48 87 04 24                                   xchg    rax, [rsp]
+//  // c3                                            retn
+//  return{
+//    0x90,
+//    0x50,
+//    {
+//      0x48, 0xb8,
+//    },
+//    HookHandler,
+//    {
+//      0x48, 0x87, 0x04, 0x24,
+//    },
+//    0xc3,
+//  };
+//}
 
 // Creates Pre breakpoint object
 _Use_decl_annotations_ static std::unique_ptr<PatchInformation>
 SbppCreatePreBreakpoint(SharedSbpData* shared_sbp_data, void* address,
-                        const BreakpointTarget& target, const char* name) {
-  auto info_for_pre = SbppCreateBreakpoint(shared_sbp_data, address);
-  info_for_pre->type = BreakpointType::kPre;
-  info_for_pre->handler = target.pre_handler;
-  info_for_pre->post_handler = target.post_handler;
-  info_for_pre->target_tid = nullptr;
-  info_for_pre->parameters = {};
-  memcpy(info_for_pre->name.data(), name, info_for_pre->name.size() - 1);
-  return info_for_pre;
-}
-
-// Creats Post breakpoint object
-_Use_decl_annotations_ static std::unique_ptr<PatchInformation>
-SbppCreatePostBreakpoint(SharedSbpData* shared_sbp_data,
-
-                         void* address, const PatchInformation& info,
-                         HANDLE target_tid,
-                         const CapturedParameters& parameters) {
-  auto info_for_post = SbppCreateBreakpoint(shared_sbp_data, address);
-  info_for_post->type = BreakpointType::kPost;
-  info_for_post->handler = info.post_handler;
-  info_for_post->post_handler = nullptr;
-  info_for_post->target_tid = target_tid;
-  info_for_post->parameters = parameters;
-  info_for_post->name = info.name;
-  return info_for_post;
-}
-
-// Creates a breakpoint object and fill out basic fields
-_Use_decl_annotations_ static std::unique_ptr<PatchInformation>
-SbppCreateBreakpoint(SharedSbpData* shared_sbp_data, void* address) {
+                        BreakpointTarget* target, const char* name) {
   auto info = std::make_unique<PatchInformation>();
   auto reusable_info = SbppFindPatchInfoByPage(shared_sbp_data, address);
   if (reusable_info) {
@@ -372,20 +329,76 @@ SbppCreateBreakpoint(SharedSbpData* shared_sbp_data, void* address) {
     info->shadow_page_base_for_rw = std::make_shared<Page>();
     info->shadow_page_base_for_exec = std::make_shared<Page>();
     auto page_base = PAGE_ALIGN(address);
-    RtlCopyMemory(info->shadow_page_base_for_rw.get()->page, page_base,
-                  PAGE_SIZE);
-    RtlCopyMemory(info->shadow_page_base_for_exec.get()->page, page_base,
-                  PAGE_SIZE);
+    RtlCopyMemory(info->shadow_page_base_for_rw->page, page_base, PAGE_SIZE);
+    RtlCopyMemory(info->shadow_page_base_for_exec->page, page_base, PAGE_SIZE);
   }
   info->patch_address = address;
-  info->pa_base_for_rw =
-      UtilPaFromVa(info->shadow_page_base_for_rw.get()->page);
-  info->pa_base_for_exec =
-      UtilPaFromVa(info->shadow_page_base_for_exec.get()->page);
+  info->pa_base_for_rw = UtilPaFromVa(info->shadow_page_base_for_rw->page);
+  info->pa_base_for_exec = UtilPaFromVa(info->shadow_page_base_for_exec->page);
+  info->handler = target->handler;
+  RtlCopyMemory(info->name.data(), name, info->name.size() - 1);
 
-  // Set an actual breakpoint (0xcc) onto the shadow page for EXEC
-  SbppEmbedBreakpoint(info->shadow_page_base_for_exec.get()->page +
-                      BYTE_OFFSET(address));
+  //
+  csh handle = {};
+  const auto mode = IsX64() ? CS_MODE_64 : CS_MODE_32;
+  if (cs_open(CS_ARCH_X86, mode, &handle) != CS_ERR_OK) {
+    HYPERPLATFORM_COMMON_BUG_CHECK(HyperPlatformBugCheck::kUnspecified, 0, 0,
+                                   0);
+  }
+
+  static const auto kLongestInstSize = 15;
+  cs_insn* instructions = nullptr;
+  const auto count =
+      cs_disasm(handle, (uint8_t*)info->patch_address, kLongestInstSize,
+                (uint64_t)info->patch_address, 1, &instructions);
+  if (count == 0) {
+    cs_close(&handle);
+    HYPERPLATFORM_COMMON_BUG_CHECK(HyperPlatformBugCheck::kUnspecified, 0, 0,
+                                   0);
+  }
+
+  auto patch_size = instructions[0].size;
+  cs_free(instructions, count);
+  cs_close(&handle);
+
+  // HYPERPLATFORM_COMMON_DBG_BREAK();
+
+  info->details.patch_size = patch_size;
+
+  // Build trampoline code (copied stub -> in the middle of original)
+  auto jmp_to_original = DispgpMakeTrampolineCode(
+      reinterpret_cast<UCHAR*>(info->patch_address) + patch_size);
+#pragma warning(push)
+#pragma warning(disable: 30030) // Allocating executable POOL_TYPE memory
+  target->original_call = ExAllocatePoolWithTag(
+      NonPagedPoolExecute, patch_size + sizeof(jmp_to_original),
+      kHyperPlatformCommonPoolTag);
+#pragma warning(pop)
+  if (!target->original_call) {
+    HYPERPLATFORM_COMMON_BUG_CHECK(HyperPlatformBugCheck::kUnspecified, 0, 0,
+                                   0);
+  }
+  // copy original code
+  RtlCopyMemory(target->original_call, info->patch_address, patch_size);
+  // embed jmp code following original code
+  RtlCopyMemory(reinterpret_cast<UCHAR*>(target->original_call) + patch_size,
+                &jmp_to_original, sizeof(jmp_to_original));
+
+  // install patch to shadow page
+  static const UCHAR kBreakpoint[] = {
+      0xcc,
+  };
+  RtlCopyMemory(
+      info->shadow_page_base_for_exec->page + BYTE_OFFSET(info->patch_address),
+      kBreakpoint, sizeof(kBreakpoint));
+
+  // DO LOG
+  HYPERPLATFORM_LOG_DEBUG(
+      "Patch = %p, Exec = %p, RW = %p, Trampoline = %p", info->patch_address,
+      info->shadow_page_base_for_exec->page,
+      info->shadow_page_base_for_rw->page, target->original_call);
+
+  KeInvalidateAllCaches();
   return info;
 }
 
@@ -414,32 +427,6 @@ _Use_decl_annotations_ static PatchInformation* SbppFindPatchInfoByAddress(
     return nullptr;
   }
   return found->get();
-}
-
-// Find a duplicated post breakpoint object. It is a workaround for the issue
-// #2.
-_Use_decl_annotations_ static PatchInformation* SbppFindDuplicatedPostPatchInfo(
-    SharedSbpData* shared_sbp_data, void* address, HANDLE target_tid) {
-  const auto found = std::find_if(
-      shared_sbp_data->breakpoints.begin(), shared_sbp_data->breakpoints.end(),
-      [address, target_tid](const auto& info) {
-        return (info->type == BreakpointType::kPost &&
-                PAGE_ALIGN(info->patch_address) == PAGE_ALIGN(address) &&
-                info->target_tid == target_tid);
-      });
-  if (found == shared_sbp_data->breakpoints.cend()) {
-    return nullptr;
-  }
-  return found->get();
-}
-
-// Sets a breakpoint to the address
-_Use_decl_annotations_ static void SbppEmbedBreakpoint(void* address) {
-  static const UCHAR kBreakpoint[1] = {
-      0xcc,
-  };
-  UtilForceCopyMemory(address, kBreakpoint, sizeof(kBreakpoint));
-  //KeInvalidateAllCaches();
 }
 
 // Show a shadowed page for execution
@@ -486,15 +473,6 @@ _Use_decl_annotations_ static void SbppDisablePageShadowing(
   ept_pt_entry->fields.physial_address = UtilPfnFromPa(pa_base);
 
   UtilInveptAll();
-}
-
-// Checks if #BP is caused by the read write copy page. If so, that breakpoint
-// is set by a guest and not the VMM and should be delivered to a guest.
-_Use_decl_annotations_ static bool SbppIsShadowBreakpoint(
-    const PatchInformation& info) {
-  auto address = info.shadow_page_base_for_rw.get()->page +
-                 BYTE_OFFSET(info.patch_address);
-  return (*address != 0xcc);
 }
 
 // Set MTF on the current processor, and modifies guest's TF accordingly.
@@ -550,19 +528,19 @@ _Use_decl_annotations_ static void SbppAddBreakpointToList(
   shared_sbp_data->breakpoints.push_back(std::move(info));
 }
 
-// Deletes a breakpoint info from the list if exists
-_Use_decl_annotations_ static void SbppDeleteBreakpointFromList(
-    SharedSbpData* shared_sbp_data, const PatchInformation& info) {
-  auto iter = std::find_if(
-      shared_sbp_data->breakpoints.begin(), shared_sbp_data->breakpoints.end(),
-      [info](const auto& info2) {
-        return (info.patch_address == info2->patch_address &&
-                info.target_tid == info2->target_tid);
-      });
-  if (iter != shared_sbp_data->breakpoints.end()) {
-    shared_sbp_data->breakpoints.erase(iter);
-  }
-}
+//// Deletes a breakpoint info from the list if exists
+//_Use_decl_annotations_ static void SbppDeleteBreakpointFromList(
+//    SharedSbpData* shared_sbp_data, const PatchInformation& info) {
+//  auto iter = std::find_if(
+//      shared_sbp_data->breakpoints.begin(),
+//      shared_sbp_data->breakpoints.end(),
+//      [info](const auto& info2) {
+//        return info.patch_address == info2->patch_address;
+//      });
+//  if (iter != shared_sbp_data->breakpoints.end()) {
+//    shared_sbp_data->breakpoints.erase(iter);
+//  }
+//}
 
 // Allocates a non-paged, page-alined page. Issues bug check on failure
 Page::Page()

@@ -35,31 +35,19 @@ struct EptData;
 struct Page;
 struct PatchInformation;
 
-// Breakpoint handler type
-using BreakpointHandlerType = void (*)(SharedSbpData* shared_sbp_data,
-                                       const PatchInformation& info,
-                                       EptData* ept_data, GpRegisters* gp_reg,
-                                       ULONG_PTR guest_sp);
-
 // Expresses where to set a breakpoint by a function name and its handlers
 struct BreakpointTarget {
   UNICODE_STRING target_name;
-  BreakpointHandlerType pre_handler;
-  BreakpointHandlerType post_handler;
+  void* handler;
+  void* original_call;
 };
 
-// A type of breakpoint
-enum class BreakpointType {
-  kPre,   // pre_handler is called
-  kPost,  // post_handler is called
+struct PatchInfoDetails {
+  SIZE_T patch_size;
 };
-
-// Holds at most 16 function paramaters
-using CapturedParameters = std::array<ULONG_PTR, 16>;
 
 // Represents shadow breakpoint
 struct PatchInformation {
-  BreakpointType type;
   void* patch_address;  // An address of breakpoint
 
   // A copy of a pages where patch_address belongs to. shadow_page_base_for_rw
@@ -72,25 +60,11 @@ struct PatchInformation {
   ULONG64 pa_base_for_rw;
   ULONG64 pa_base_for_exec;
 
-  // Hanlder to be called
-  BreakpointHandlerType handler;
-
-  // If type is kPre, this is used to create kPost breakpoint on hit of the
-  // breakpoint as needed. If type is kPost, it is always nullptr because
-  // a handler is saved to and called via handler.
-  BreakpointHandlerType post_handler;
-
-  // If type is kPre, it is ignored. If type is kPost, it is used to determine
-  // a thread hitting the breakpoint is the same thread as one hit a
-  // corresponding kPre breakpoint.
-  HANDLE target_tid;
-
-  // If type is kPre, it is ignored. If type is kPost, it can hold function
-  // parameters inspected in a pre-handler.
-  CapturedParameters parameters;
-
   // A name of breakpont (a DDI name)
   std::array<char, 64> name;
+
+  void* handler;
+  PatchInfoDetails details;
 };
 
 struct SharedSbpData {
@@ -115,14 +89,8 @@ struct SbpData {
 //
 
 void SbpCreatePreBreakpoint(_In_ SharedSbpData* shared_sbp_data,
-                            _In_ void* address,
-                            _In_ const BreakpointTarget& target,
+                            _In_ void* address, _In_ BreakpointTarget* target,
                             _In_ const char* name);
-
-_IRQL_requires_min_(DISPATCH_LEVEL) void SbpCreateAndEnablePostBreakpoint(
-    _In_ SharedSbpData* shared_sbp_data, _In_ void* address,
-    _In_ const PatchInformation& info,
-    _In_ const CapturedParameters& parameters, _In_ EptData* ept_data);
 
 ////////////////////////////////////////////////////////////////////////////////
 //
