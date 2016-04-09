@@ -162,7 +162,6 @@
     <ClInclude Include="cs_driver.h" />
     <ClInclude Include="ddi_mon.h" />
     <ClInclude Include="shadow_bp.h" />
-    <ClInclude Include="shadow_bp_internal.h" />
   </ItemGroup>
   <ItemGroup>
     <MASM Include="..\HyperPlatform\HyperPlatform\Arch\x64\x64.asm">

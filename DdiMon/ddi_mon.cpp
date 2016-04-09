@@ -13,8 +13,9 @@
 #include "../HyperPlatform/HyperPlatform/log.h"
 #include "../HyperPlatform/HyperPlatform/util.h"
 #include "../HyperPlatform/HyperPlatform/ept.h"
+#include "../HyperPlatform/HyperPlatform/kernel_stl.h"
+#include <array>
 #include "shadow_bp.h"
-#include "shadow_bp_internal.h"
 
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -42,18 +43,6 @@ using EnumExportedSymbolsCallbackType = bool (*)(
     ULONG index, ULONG_PTR base_address, PIMAGE_EXPORT_DIRECTORY directory,
     ULONG_PTR directory_base, ULONG_PTR directory_end, void* context);
 
-// dt nt!_LDR_DATA_TABLE_ENTRY
-struct LdrDataTableEntry {
-  LIST_ENTRY in_load_order_links;
-  LIST_ENTRY in_memory_order_links;
-  LIST_ENTRY in_initialization_order_links;
-  void* dll_base;
-  void* entry_point;
-  ULONG size_of_image;
-  UNICODE_STRING full_dll_name;
-  // ...
-};
-
 // For SystemProcessInformation
 enum SystemInformationClass {
   kSystemProcessInformation = 5,
@@ -79,15 +68,8 @@ struct SystemProcessInformation {
 // prototypes
 //
 
-static void DdimonpFreeAllocatedTrampolineRegions();
-
-_IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C static NTSTATUS
-    DdimonpInitializePcToFileHeader(_In_ PDRIVER_OBJECT driver_object);
-
-static void* DdimonpPcToFileHeader(_In_ void* address);
-
-static PVOID NTAPI DdimonpUnsafePcToFileHeader(_In_ PVOID pc_value,
-                                               _In_ PVOID* base_of_image);
+_IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C
+    static void DdimonpFreeAllocatedTrampolineRegions();
 
 _IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C static NTSTATUS
     DdimonpEnumExportedSymbols(_In_ ULONG_PTR base_address,
@@ -102,6 +84,9 @@ _IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C
 
 static std::array<char, 5> DdimonpTagToString(_In_ ULONG tag_value);
 
+template <typename T>
+static T DdimonpFindOrignal(_In_ T handler);
+
 static VOID DdimonpHandleExQueueWorkItem(_Inout_ PWORK_QUEUE_ITEM work_item,
                                          _In_ WORK_QUEUE_TYPE queue_type);
 
@@ -111,6 +96,7 @@ static PVOID DdimonpHandleExAllocatePoolWithTag(_In_ POOL_TYPE pool_type,
 
 static VOID DdimonpHandleExFreePoolWithTag(_Pre_notnull_ PVOID p,
                                            _In_ ULONG tag);
+
 static NTSTATUS DdimonpHandleNtQuerySystemInformation(
     _In_ SystemInformationClass SystemInformationClass,
     _Inout_ PVOID SystemInformation, _In_ ULONG SystemInformationLength,
@@ -118,19 +104,16 @@ static NTSTATUS DdimonpHandleNtQuerySystemInformation(
 
 #if defined(ALLOC_PRAGMA)
 #pragma alloc_text(INIT, DdimonInitialization)
-#pragma alloc_text(INIT, DdimonpInitializePcToFileHeader)
 #pragma alloc_text(INIT, DdimonpEnumExportedSymbols)
 #pragma alloc_text(INIT, DdimonpEnumExportedSymbolsCallback)
 #pragma alloc_text(PAGE, DdimonTermination)
+#pragma alloc_text(PAGE, DdimonpFreeAllocatedTrampolineRegions)
 #endif
 
 ////////////////////////////////////////////////////////////////////////////////
 //
 // variables
 //
-
-// An address of PsLoadedModuleList
-static LIST_ENTRY* g_ddimonp_PsLoadedModuleList;
 
 // Defines where to set breakpoints and their handlers
 //
@@ -180,29 +163,22 @@ static BreakpointTarget g_ddimonp_breakpoint_targets[] = {
 //
 
 // Initializes DdiMon
-_Use_decl_annotations_ EXTERN_C NTSTATUS DdimonInitialization(
-    SharedSbpData* shared_sbp_data, PDRIVER_OBJECT driver_object) {
+_Use_decl_annotations_ EXTERN_C NTSTATUS
+DdimonInitialization(SharedSbpData* shared_sbp_data) {
   HYPERPLATFORM_COMMON_DBG_BREAK();
 
-  // Make DdimonpPcToFileHeader() avaialable for use
-  auto status = DdimonpInitializePcToFileHeader(driver_object);
-  if (!NT_SUCCESS(status)) {
-    return status;
-  }
-
   // Get a base address of ntoskrnl
-  auto nt_base = DdimonpPcToFileHeader(KdDebuggerEnabled);
+  auto nt_base = UtilPcToFileHeader(KdDebuggerEnabled);
   if (!nt_base) {
     return STATUS_UNSUCCESSFUL;
   }
 
   // Initialize a container of breakpoint objects and create them by enumerating
   // exported symbols by ntoskrnl
-  status = DdimonpEnumExportedSymbols(reinterpret_cast<ULONG_PTR>(nt_base),
-                                      DdimonpEnumExportedSymbolsCallback,
-                                      shared_sbp_data);
+  auto status = DdimonpEnumExportedSymbols(reinterpret_cast<ULONG_PTR>(nt_base),
+                                           DdimonpEnumExportedSymbolsCallback,
+                                           shared_sbp_data);
   if (!NT_SUCCESS(status)) {
-    DdimonpFreeAllocatedTrampolineRegions();
     return status;
   }
 
@@ -220,6 +196,7 @@ _Use_decl_annotations_ EXTERN_C NTSTATUS DdimonInitialization(
 _Use_decl_annotations_ EXTERN_C void DdimonTermination() {
   PAGED_CODE();
   HYPERPLATFORM_COMMON_DBG_BREAK();
+
   SbpStop();
   UtilSleep(500);
   DdimonpFreeAllocatedTrampolineRegions();
@@ -228,56 +205,16 @@ _Use_decl_annotations_ EXTERN_C void DdimonTermination() {
 
 // Frees trampoline code allocated and stored in g_ddimonp_breakpoint_targets by
 // DdimonpEnumExportedSymbolsCallback()
-/*_Use_decl_annotations_*/ static void DdimonpFreeAllocatedTrampolineRegions() {
+_Use_decl_annotations_ EXTERN_C static void
+DdimonpFreeAllocatedTrampolineRegions() {
+  PAGED_CODE();
+
   for (auto& target : g_ddimonp_breakpoint_targets) {
     if (target.original_call) {
       ExFreePoolWithTag(target.original_call, kHyperPlatformCommonPoolTag);
       target.original_call = nullptr;
     }
   }
-}
-
-// Saves PsLoadedModuleList that is referenced by DdimonpUnsafePcToFileHeader().
-_Use_decl_annotations_ static NTSTATUS DdimonpInitializePcToFileHeader(
-    PDRIVER_OBJECT driver_object) {
-  PAGED_CODE();
-
-#pragma warning(push)
-#pragma warning(disable : 28175)
-  auto module =
-      reinterpret_cast<LdrDataTableEntry*>(driver_object->DriverSection);
-#pragma warning(pop)
-
-  g_ddimonp_PsLoadedModuleList = module->in_load_order_links.Flink;
-  return STATUS_SUCCESS;
-}
-
-// A wrapper of DdimonpUnsafePcToFileHeader
-_Use_decl_annotations_ static void* DdimonpPcToFileHeader(void* address) {
-  void* base = nullptr;
-  return DdimonpUnsafePcToFileHeader(address, &base);
-}
-
-// A fake RtlPcToFileHeader without accquireing PsLoadedModuleSpinLock. Thus, it
-// is unsafe and should be updated if we can locate PsLoadedModuleSpinLock.
-_Use_decl_annotations_ static PVOID NTAPI
-DdimonpUnsafePcToFileHeader(PVOID pc_value, PVOID* base_of_image) {
-  if (pc_value < MmSystemRangeStart) {
-    return nullptr;
-  }
-
-  const auto head = g_ddimonp_PsLoadedModuleList;
-  for (auto current = head->Flink; current != head; current = current->Flink) {
-    const auto module =
-        CONTAINING_RECORD(current, LdrDataTableEntry, in_load_order_links);
-    const auto driver_end = reinterpret_cast<void*>(
-        reinterpret_cast<ULONG_PTR>(module->dll_base) + module->size_of_image);
-    if (UtilIsInBounds(pc_value, module->dll_base, driver_end)) {
-      *base_of_image = module->dll_base;
-      return module->dll_base;
-    }
-  }
-  return nullptr;
 }
 
 // Enumerates all exports in a module specified by base_address.
@@ -349,9 +286,12 @@ _Use_decl_annotations_ EXTERN_C static bool DdimonpEnumExportedSymbolsCallback(
     }
 
     // Yes, create a new breakpoint
-    SbpCreatePreBreakpoint(reinterpret_cast<SharedSbpData*>(context),
-                           reinterpret_cast<void*>(export_address), &target,
-                           export_name);
+    if (!SbpCreatePreBreakpoint(reinterpret_cast<SharedSbpData*>(context),
+                                reinterpret_cast<void*>(export_address),
+                                &target, export_name)) {
+      DdimonpFreeAllocatedTrampolineRegions();
+      return false;
+    }
     HYPERPLATFORM_LOG_INFO("Breakpoint has been set to %p %s.", export_address,
                            export_name);
   }
@@ -379,7 +319,8 @@ _Use_decl_annotations_ static std::array<char, 5> DdimonpTagToString(
   return str;
 }
 
-template <typename T>
+// Finds a handler to call an original function
+ template <typename T>
 static T DdimonpFindOrignal(T handler) {
   for (const auto& target : g_ddimonp_breakpoint_targets) {
     if (target.handler == handler) {
@@ -393,14 +334,18 @@ static T DdimonpFindOrignal(T handler) {
 
 // Pre-ExFreePoolWithTag. Logs if the DDI is called from where not backed by
 // any image
-_Use_decl_annotations_ static VOID DdimonpHandleExFreePoolWithTag(PVOID p, ULONG tag) {
+_Use_decl_annotations_ static VOID DdimonpHandleExFreePoolWithTag(PVOID p,
+                                                                  ULONG tag) {
   // HYPERPLATFORM_COMMON_DBG_BREAK();
   const auto original = DdimonpFindOrignal(DdimonpHandleExFreePoolWithTag);
   original(p, tag);
+
+  // Is inside image?
   auto return_addr = _ReturnAddress();
-  if (DdimonpPcToFileHeader(return_addr)) {
+  if (UtilPcToFileHeader(return_addr)) {
     return;
   }
+
   HYPERPLATFORM_LOG_INFO_SAFE(
       "%ExFreePoolWithTag(P= %p, Tag= %s) returning to %p", p,
       DdimonpTagToString(tag).data(), return_addr);
@@ -408,14 +353,14 @@ _Use_decl_annotations_ static VOID DdimonpHandleExFreePoolWithTag(PVOID p, ULONG
 
 // Pre-ExQueueWorkItem. Logs if a WorkerRoutine points to where not backed by
 // any image.
-_Use_decl_annotations_ static VOID DdimonpHandleExQueueWorkItem(PWORK_QUEUE_ITEM work_item,
-                                         WORK_QUEUE_TYPE queue_type) {
+_Use_decl_annotations_ static VOID DdimonpHandleExQueueWorkItem(
+    PWORK_QUEUE_ITEM work_item, WORK_QUEUE_TYPE queue_type) {
   // HYPERPLATFORM_COMMON_DBG_BREAK();
   const auto original = DdimonpFindOrignal(DdimonpHandleExQueueWorkItem);
+  original(work_item, queue_type);
 
   // Is inside image?
-  if (DdimonpPcToFileHeader(work_item->WorkerRoutine)) {
-    original(work_item, queue_type);
+  if (UtilPcToFileHeader(work_item->WorkerRoutine)) {
     return;
   }
 
@@ -423,22 +368,19 @@ _Use_decl_annotations_ static VOID DdimonpHandleExQueueWorkItem(PWORK_QUEUE_ITEM
   HYPERPLATFORM_LOG_INFO_SAFE(
       "ExQueueWorkItem({Routine= %p, Parameter= %p}, %d) returning to %p",
       work_item->WorkerRoutine, work_item->Parameter, queue_type, return_addr);
-  // DO log
-  // call original
-  // do log
-  original(work_item, queue_type);
 }
 
 // Pre-ExAllocatePoolWithTag. Logs if the DDI is called from where not backed by
 // any image and sets post breakpoint if so.
-_Use_decl_annotations_ static PVOID DdimonpHandleExAllocatePoolWithTag(POOL_TYPE pool_type,
-                                                SIZE_T number_of_bytes,
-                                                ULONG tag) {
+_Use_decl_annotations_ static PVOID DdimonpHandleExAllocatePoolWithTag(
+    POOL_TYPE pool_type, SIZE_T number_of_bytes, ULONG tag) {
   // HYPERPLATFORM_COMMON_DBG_BREAK();
   const auto original = DdimonpFindOrignal(DdimonpHandleExAllocatePoolWithTag);
   const auto result = original(pool_type, number_of_bytes, tag);
+
+  // Is inside image?
   auto return_addr = _ReturnAddress();
-  if (DdimonpPcToFileHeader(return_addr)) {
+  if (UtilPcToFileHeader(return_addr)) {
     return result;
   }
 
@@ -472,7 +414,6 @@ _Use_decl_annotations_ static NTSTATUS DdimonpHandleNtQuerySystemInformation(
     auto curr = next;
     next = reinterpret_cast<SystemProcessInformation*>(
         reinterpret_cast<UCHAR*>(curr) + curr->next_entry_offset);
-
     if (_wcsnicmp(next->image_name.Buffer, L"cmd.exe", 7) == 0) {
       if (next->next_entry_offset) {
         curr->next_entry_offset += next->next_entry_offset;
@@ -482,6 +423,5 @@ _Use_decl_annotations_ static NTSTATUS DdimonpHandleNtQuerySystemInformation(
       next = curr;
     }
   }
-
   return result;
 }

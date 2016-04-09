@@ -98,9 +98,6 @@
     <ClInclude Include="shadow_bp.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="shadow_bp_internal.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="cs_driver.h">
       <Filter>Header Files</Filter>
     </ClInclude>

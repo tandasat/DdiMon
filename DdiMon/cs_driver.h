@@ -6,9 +6,7 @@
 #include <ntddk.h>
 
 // A pool tag for memory allocation
-#ifndef CS_DRIVER_POOL_TAG
-#define CS_DRIVER_POOL_TAG 'rdsC'
-#endif
+static const ULONG CS_DRIVER_POOL_TAG = 'rdsC';
 
 // A structure to implement realloc()
 typedef struct _CS_DRIVER_MEMBLOCK {
@@ -69,7 +67,7 @@ inline void *__cdecl csdrv_realloc(void *ptr, size_t size) {
 
   current_size = CONTAINING_RECORD(ptr, CS_DRIVER_MEMBLOCK, data)->size;
   smaller_size = (current_size < size) ? current_size : size;
-  memcpy(new_ptr, ptr, smaller_size);
+  RtlCopyMemory(new_ptr, ptr, smaller_size);
   csdrv_free(ptr);
   return new_ptr;
 }
@@ -78,9 +76,9 @@ inline void *__cdecl csdrv_realloc(void *ptr, size_t size) {
 // vsnprintf() in a return value and when a null-terminater is set.
 // csdrv_vsnprintf() takes care of those differences.
 #pragma warning(push)
-// Banned API Usage : _vsnprintf is a Banned API as listed in dontuse.h for
-// security purposes.
-#pragma warning(disable: 28719)
+#pragma warning(disable : 28719)  // Banned API Usage : _vsnprintf is a Banned
+                                  // API as listed in dontuse.h for security
+                                  // purposes.
 inline int __cdecl csdrv_vsnprintf(char *buffer, size_t count,
                                    const char *format, va_list argptr) {
   int result = _vsnprintf(buffer, count, format, argptr);

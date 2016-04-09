@@ -6,7 +6,6 @@
 /// Implements DdiMon core functions.
 
 #include "shadow_bp.h"
-#include "shadow_bp_internal.h"
 #include <ntimage.h>
 #define NTSTRSAFE_NO_CB_FUNCTIONS
 #include <ntstrsafe.h>
@@ -14,6 +13,11 @@
 #include "../HyperPlatform/HyperPlatform/log.h"
 #include "../HyperPlatform/HyperPlatform/util.h"
 #include "../HyperPlatform/HyperPlatform/ept.h"
+#include "../HyperPlatform/HyperPlatform/kernel_stl.h"
+#include <vector>
+#include <memory>
+#include <algorithm>
+#include <array>
 #include "cs_driver.h"
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -38,33 +42,95 @@ struct Page {
   ~Page();
 };
 
-// Scoped lock
-class ScopedSpinLockAtDpc {
- public:
-  explicit ScopedSpinLockAtDpc(_In_ PKSPIN_LOCK spin_lock);
+// Represents shadow breakpoint
+struct PatchInformation {
+  void* patch_address;  // An address of breakpoint
+  void* handler;        // An address of the handler routine
 
-  ~ScopedSpinLockAtDpc();
+  // A copy of a pages where patch_address belongs to. shadow_page_base_for_rw
+  // is exposed to a guest for read and write operation against the page of
+  // patch_address, and shadow_page_base_for_exec is exposed for execution.
+  std::shared_ptr<Page> shadow_page_base_for_rw;
+  std::shared_ptr<Page> shadow_page_base_for_exec;
 
- private:
-  KLOCK_QUEUE_HANDLE lock_handle_;
+  // Phyisical address of the above two copied pages
+  ULONG64 pa_base_for_rw;
+  ULONG64 pa_base_for_exec;
+
+  // A name of breakpont (a DDI name)
+  std::array<char, 64> name;
 };
+
+struct SharedSbpData {
+  // Holds all currently installed breakpoints
+  std::vector<std::unique_ptr<PatchInformation>> breakpoints;
+
+  // Spin lock for breakpoints
+  KSPIN_LOCK breakpoints_skinlock;
+};
+
+struct SbpData {
+  // Remember a breakpoint hit last
+  const PatchInformation* last_breakpoint;
+
+  // Remember a value of guests eflags.IT
+  bool previouse_interrupt_flag;
+};
+
+// A structure reflects inline hook code.
+#include <pshpack1.h>
+#if defined(_AMD64_)
+struct TrampolineCode {
+  UCHAR nop;
+  UCHAR jmp[6];
+  void* FunctionAddress;
+};
+static_assert(sizeof(TrampolineCode) == 15, "Size check");
+
+struct TrampolineCodeNoRead {
+  UCHAR nop;
+  UCHAR push_rax;
+  UCHAR mov_rax[2];
+  void* FunctionAddress;
+  UCHAR xchg_rax_ptr_rsp[4];
+  UCHAR retn;
+};
+static_assert(sizeof(TrampolineCodeNoRead) == 17, "Size check");
+#else
+struct TrampolineCode {
+  UCHAR nop;
+  UCHAR push;
+  void* FunctionAddress;
+  UCHAR ret;
+};
+static_assert(sizeof(TrampolineCode) == 7, "Size check");
+#endif
+#include <poppack.h>
 
 ////////////////////////////////////////////////////////////////////////////////
 //
 // prototypes
 //
 
-static std::unique_ptr<PatchInformation> SbppCreatePreBreakpoint(
-    _In_ SharedSbpData* shared_sbp_data, _In_ void* address,
-    _In_ BreakpointTarget* target, _In_ const char* name);
+_IRQL_requires_max_(PASSIVE_LEVEL) static std::
+    unique_ptr<PatchInformation> SbppCreatePreBreakpoint(
+        _In_ SharedSbpData* shared_sbp_data, _In_ void* address,
+        _In_ BreakpointTarget* target, _In_ const char* name);
 
-static std::unique_ptr<PatchInformation> SbppCreateBreakpoint(
+_IRQL_requires_max_(PASSIVE_LEVEL) _Success_(return) static bool SbppSetupInlineHook(
+    _In_ void* patch_address, _In_ UCHAR* shadow_exec_page,
+    _Out_ void** original_call_ptr);
+
+_IRQL_requires_max_(PASSIVE_LEVEL) static SIZE_T
+    SbppGetInstructionSize(_In_ void* address);
+
+_IRQL_requires_max_(PASSIVE_LEVEL) static TrampolineCode
+    DispgpMakeTrampolineCode(_In_ void* hook_handler);
+
+static PatchInformation* SbppFindPatchInfoByPage(
     _In_ SharedSbpData* shared_sbp_data, _In_ void* address);
 
 static PatchInformation* SbppFindPatchInfoByAddress(
-    _In_ SharedSbpData* shared_sbp_data, _In_ void* address);
-
-static PatchInformation* SbppFindPatchInfoByPage(
     _In_ SharedSbpData* shared_sbp_data, _In_ void* address);
 
 static void SbppEnablePageShadowingForExec(_In_ const PatchInformation& info,
@@ -85,16 +151,14 @@ static const PatchInformation* SbppRestoreLastPatchInfo(_In_ SbpData* sbp_data);
 
 static bool SbppIsSbpActive(_In_ SharedSbpData* shared_sbp_data);
 
-static void SbppAddBreakpointToList(
-    _In_ SharedSbpData* shared_sbp_data,
-    _In_ std::unique_ptr<PatchInformation> info);
-
-static void SbppDeleteBreakpointFromList(_In_ SharedSbpData* shared_sbp_data,
-                                         _In_ const PatchInformation& info);
-
 #if defined(ALLOC_PRAGMA)
 #pragma alloc_text(INIT, SbpInitialization)
+#pragma alloc_text(INIT, SbpAllocateSharedData)
+#pragma alloc_text(INIT, SbpStart)
+#pragma alloc_text(INIT, SbpCreatePreBreakpoint)
 #pragma alloc_text(PAGE, SbpTermination)
+#pragma alloc_text(PAGE, SbpFreeSharedData)
+#pragma alloc_text(PAGE, SbpStop)
 #endif
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -107,9 +171,32 @@ static void SbppDeleteBreakpointFromList(_In_ SharedSbpData* shared_sbp_data,
 // implementations
 //
 
+_Use_decl_annotations_ EXTERN_C SbpData* SbpInitialization() {
+  PAGED_CODE();
+
+  return new SbpData();
+}
+
+// Terminates DdiMon
+_Use_decl_annotations_ EXTERN_C void SbpTermination(SbpData* sbp_data) {
+  PAGED_CODE();
+
+  delete sbp_data;
+}
+
 // Initializes DdiMon
 _Use_decl_annotations_ EXTERN_C SharedSbpData* SbpAllocateSharedData() {
-  if (cs_driver_init() != CS_ERR_OK) {
+  PAGED_CODE();
+
+  KFLOATING_SAVE float_save = {};
+  auto status = KeSaveFloatingPointState(&float_save);
+  if (!NT_SUCCESS(status)) {
+    return nullptr;
+  }
+
+  auto cs_status = cs_driver_init();
+  KeRestoreFloatingPointState(&float_save);
+  if (cs_status != CS_ERR_OK) {
     return nullptr;
   }
 
@@ -121,21 +208,15 @@ _Use_decl_annotations_ EXTERN_C SharedSbpData* SbpAllocateSharedData() {
 //
 _Use_decl_annotations_ EXTERN_C void SbpFreeSharedData(
     SharedSbpData* shared_sbp_data) {
+  PAGED_CODE();
+
   delete shared_sbp_data;
 }
 
-_Use_decl_annotations_ EXTERN_C SbpData* SbpInitialization() {
-  return new SbpData();
-}
-
-// Terminates DdiMon
-_Use_decl_annotations_ EXTERN_C void SbpTermination(SbpData* sbp_data) {
-  PAGED_CODE();
-  delete sbp_data;
-}
-
 // Enables page shadowing for all breakpoints
-_Use_decl_annotations_ NTSTATUS SbpStart() {
+_Use_decl_annotations_ EXTERN_C NTSTATUS SbpStart() {
+  PAGED_CODE();
+
   return UtilForEachProcessor(
       [](void*) {
         return UtilVmCall(HypercallNumber::kSbpEnablePageShadowing, nullptr);
@@ -144,7 +225,9 @@ _Use_decl_annotations_ NTSTATUS SbpStart() {
 }
 
 // Disables page shadowing for all breakpoints
-_Use_decl_annotations_ NTSTATUS SbpStop() {
+_Use_decl_annotations_ EXTERN_C NTSTATUS SbpStop() {
+  PAGED_CODE();
+
   return UtilForEachProcessor(
       [](void*) {
         return UtilVmCall(HypercallNumber::kSbpDisablePageShadowing, nullptr);
@@ -214,7 +297,6 @@ _Use_decl_annotations_ void SbpHandleEptViolation(
     return;
   }
 
-  ScopedSpinLockAtDpc scoped_lock(&shared_sbp_data->breakpoints_skinlock);
   const auto info = SbppFindPatchInfoByPage(shared_sbp_data, fault_va);
   if (!info) {
     return;
@@ -230,87 +312,31 @@ _Use_decl_annotations_ void SbpHandleEptViolation(
 }
 
 // Creates Pre breakpoint object and adds it to the list
-_Use_decl_annotations_ void SbpCreatePreBreakpoint(
+_Use_decl_annotations_ EXTERN_C bool SbpCreatePreBreakpoint(
     SharedSbpData* shared_sbp_data, void* address, BreakpointTarget* target,
     const char* name) {
-  ScopedSpinLockAtDpc scoped_lock(&shared_sbp_data->breakpoints_skinlock);
+  PAGED_CODE();
+
   auto info = SbppCreatePreBreakpoint(
       shared_sbp_data, reinterpret_cast<void*>(address), target, name);
-  SbppAddBreakpointToList(shared_sbp_data, std::move(info));
+  if (!info) {
+    return false;
+  }
+
+  if (!SbppSetupInlineHook(info->patch_address,
+                           info->shadow_page_base_for_exec->page,
+                           &target->original_call)) {
+    return false;
+  }
+
+  HYPERPLATFORM_LOG_DEBUG(
+      "Patch = %p, Exec = %p, RW = %p, Trampoline = %p", info->patch_address,
+      info->shadow_page_base_for_exec->page,
+      info->shadow_page_base_for_rw->page, target->original_call);
+
+  shared_sbp_data->breakpoints.push_back(std::move(info));
+  return true;
 }
-
-// A structure reflects inline hook code.
-#include <pshpack1.h>
-#if defined(_AMD64_)
-struct TrampolineCode {
-  UCHAR nop;
-  UCHAR jmp[6];
-  void* FunctionAddress;
-};
-static_assert(sizeof(TrampolineCode) == 15, "Size check");
-
-struct TrampolineCodeNoRead {
-  UCHAR nop;
-  UCHAR push_rax;
-  UCHAR mov_rax[2];
-  void* FunctionAddress;
-  UCHAR xchg_rax_ptr_rsp[4];
-  UCHAR retn;
-};
-static_assert(sizeof(TrampolineCodeNoRead) == 17, "Size check");
-#else
-struct TrampolineCode {
-  UCHAR nop;
-  UCHAR push;
-  void* FunctionAddress;
-  UCHAR ret;
-};
-static_assert(sizeof(TrampolineCode) == 7, "Size check");
-#endif
-#include <poppack.h>
-
-static TrampolineCode DispgpMakeTrampolineCode(void* HookHandler) {
-#if defined(_AMD64_)
-  //          jmp qword ptr [nextline]
-  // nextline:
-  //          dq HookHandler
-  return {
-      0x90,
-      {
-          0xff, 0x25, 0x00, 0x00, 0x00, 0x00,
-      },
-      HookHandler,
-  };
-#else
-  // 6832e30582      push    offset nt!ExFreePoolWithTag + 0x2 (8205e332)
-  // c3              ret
-  return {
-      0x90, 0x68, HookHandler, 0xc3,
-  };
-#endif
-}
-
-// static TrampolineCodeNoRead DispgpMakeTrampolineCodeNoRead(void* HookHandler)
-//{
-//  // 90                                            nop
-//  // 50                                            push    rax
-//  // 48 b8 ff ff ff ff ff ff ff ff                 mov     rax,
-//  0ffffffffffffffffh
-//  // 48 87 04 24                                   xchg    rax, [rsp]
-//  // c3                                            retn
-//  return{
-//    0x90,
-//    0x50,
-//    {
-//      0x48, 0xb8,
-//    },
-//    HookHandler,
-//    {
-//      0x48, 0x87, 0x04, 0x24,
-//    },
-//    0xc3,
-//  };
-//}
 
 // Creates Pre breakpoint object
 _Use_decl_annotations_ static std::unique_ptr<PatchInformation>
@@ -337,69 +363,101 @@ SbppCreatePreBreakpoint(SharedSbpData* shared_sbp_data, void* address,
   info->pa_base_for_exec = UtilPaFromVa(info->shadow_page_base_for_exec->page);
   info->handler = target->handler;
   RtlCopyMemory(info->name.data(), name, info->name.size() - 1);
+  return info;
+}
 
-  //
-  csh handle = {};
-  const auto mode = IsX64() ? CS_MODE_64 : CS_MODE_32;
-  if (cs_open(CS_ARCH_X86, mode, &handle) != CS_ERR_OK) {
-    HYPERPLATFORM_COMMON_BUG_CHECK(HyperPlatformBugCheck::kUnspecified, 0, 0,
-                                   0);
+_Use_decl_annotations_ static bool SbppSetupInlineHook(
+    void* patch_address, UCHAR* shadow_exec_page, void** original_call_ptr) {
+  const auto patch_size = SbppGetInstructionSize(patch_address);
+  if (!patch_size) {
+    return false;
   }
-
-  static const auto kLongestInstSize = 15;
-  cs_insn* instructions = nullptr;
-  const auto count =
-      cs_disasm(handle, (uint8_t*)info->patch_address, kLongestInstSize,
-                (uint64_t)info->patch_address, 1, &instructions);
-  if (count == 0) {
-    cs_close(&handle);
-    HYPERPLATFORM_COMMON_BUG_CHECK(HyperPlatformBugCheck::kUnspecified, 0, 0,
-                                   0);
-  }
-
-  auto patch_size = instructions[0].size;
-  cs_free(instructions, count);
-  cs_close(&handle);
-
-  // HYPERPLATFORM_COMMON_DBG_BREAK();
-
-  info->details.patch_size = patch_size;
 
   // Build trampoline code (copied stub -> in the middle of original)
-  auto jmp_to_original = DispgpMakeTrampolineCode(
-      reinterpret_cast<UCHAR*>(info->patch_address) + patch_size);
+  const auto jmp_to_original = DispgpMakeTrampolineCode(
+      reinterpret_cast<UCHAR*>(patch_address) + patch_size);
 #pragma warning(push)
-#pragma warning(disable: 30030) // Allocating executable POOL_TYPE memory
-  target->original_call = ExAllocatePoolWithTag(
+#pragma warning(disable : 30030)  // Allocating executable POOL_TYPE memory
+  const auto original_call = ExAllocatePoolWithTag(
       NonPagedPoolExecute, patch_size + sizeof(jmp_to_original),
       kHyperPlatformCommonPoolTag);
 #pragma warning(pop)
-  if (!target->original_call) {
-    HYPERPLATFORM_COMMON_BUG_CHECK(HyperPlatformBugCheck::kUnspecified, 0, 0,
-                                   0);
+  if (!original_call) {
+    return false;
   }
-  // copy original code
-  RtlCopyMemory(target->original_call, info->patch_address, patch_size);
-  // embed jmp code following original code
-  RtlCopyMemory(reinterpret_cast<UCHAR*>(target->original_call) + patch_size,
+
+  // copy original code and embed jmp code following original code
+  RtlCopyMemory(original_call, patch_address, patch_size);
+  RtlCopyMemory(reinterpret_cast<UCHAR*>(original_call) + patch_size,
                 &jmp_to_original, sizeof(jmp_to_original));
 
   // install patch to shadow page
   static const UCHAR kBreakpoint[] = {
       0xcc,
   };
-  RtlCopyMemory(
-      info->shadow_page_base_for_exec->page + BYTE_OFFSET(info->patch_address),
-      kBreakpoint, sizeof(kBreakpoint));
-
-  // DO LOG
-  HYPERPLATFORM_LOG_DEBUG(
-      "Patch = %p, Exec = %p, RW = %p, Trampoline = %p", info->patch_address,
-      info->shadow_page_base_for_exec->page,
-      info->shadow_page_base_for_rw->page, target->original_call);
+  RtlCopyMemory(shadow_exec_page + BYTE_OFFSET(patch_address), kBreakpoint,
+                sizeof(kBreakpoint));
 
   KeInvalidateAllCaches();
-  return info;
+
+  *original_call_ptr = original_call;
+  return true;
+}
+
+//
+_Use_decl_annotations_ static SIZE_T SbppGetInstructionSize(void* address) {
+  KFLOATING_SAVE float_save = {};
+  auto status = KeSaveFloatingPointState(&float_save);
+  if (!NT_SUCCESS(status)) {
+    return 0;
+  }
+
+  csh handle = {};
+  const auto mode = IsX64() ? CS_MODE_64 : CS_MODE_32;
+  if (cs_open(CS_ARCH_X86, mode, &handle) != CS_ERR_OK) {
+    KeRestoreFloatingPointState(&float_save);
+    return 0;
+  }
+
+  static const auto kLongestInstSize = 15;
+  cs_insn* instructions = nullptr;
+  const auto count = cs_disasm(handle, (uint8_t*)address, kLongestInstSize,
+                               (uint64_t)address, 1, &instructions);
+  if (count == 0) {
+    cs_close(&handle);
+    KeRestoreFloatingPointState(&float_save);
+    return 0;
+  }
+
+  const auto size = instructions[0].size;
+  cs_free(instructions, count);
+  cs_close(&handle);
+  KeRestoreFloatingPointState(&float_save);
+  return size;
+}
+
+//
+_Use_decl_annotations_ static TrampolineCode DispgpMakeTrampolineCode(
+    void* hook_handler) {
+#if defined(_AMD64_)
+  //          jmp qword ptr [nextline]
+  // nextline:
+  //          dq hook_handler
+  return {
+      0x90,
+      {
+          0xff, 0x25, 0x00, 0x00, 0x00, 0x00,
+      },
+      hook_handler,
+  };
+#else
+  // 90              nop
+  // 6832e30582      push    offset nt!ExFreePoolWithTag + 0x2 (8205e332)
+  // c3              ret
+  return {
+      0x90, 0x68, hook_handler, 0xc3,
+  };
+#endif
 }
 
 // Find a breakpoint object by address
@@ -522,26 +580,6 @@ _Use_decl_annotations_ static bool SbppIsSbpActive(
   return !!(shared_sbp_data);
 }
 
-// Adds a breakpoint info to the list
-_Use_decl_annotations_ static void SbppAddBreakpointToList(
-    SharedSbpData* shared_sbp_data, std::unique_ptr<PatchInformation> info) {
-  shared_sbp_data->breakpoints.push_back(std::move(info));
-}
-
-//// Deletes a breakpoint info from the list if exists
-//_Use_decl_annotations_ static void SbppDeleteBreakpointFromList(
-//    SharedSbpData* shared_sbp_data, const PatchInformation& info) {
-//  auto iter = std::find_if(
-//      shared_sbp_data->breakpoints.begin(),
-//      shared_sbp_data->breakpoints.end(),
-//      [info](const auto& info2) {
-//        return info.patch_address == info2->patch_address;
-//      });
-//  if (iter != shared_sbp_data->breakpoints.end()) {
-//    shared_sbp_data->breakpoints.erase(iter);
-//  }
-//}
-
 // Allocates a non-paged, page-alined page. Issues bug check on failure
 Page::Page()
     : page(reinterpret_cast<UCHAR*>(ExAllocatePoolWithTag(
@@ -554,13 +592,3 @@ Page::Page()
 
 // De-allocates the allocated page
 Page::~Page() { ExFreePoolWithTag(page, kHyperPlatformCommonPoolTag); }
-
-// Acquires a spin lock
-ScopedSpinLockAtDpc::ScopedSpinLockAtDpc(_In_ PKSPIN_LOCK spin_lock) {
-  KeAcquireInStackQueuedSpinLockAtDpcLevel(spin_lock, &lock_handle_);
-}
-
-// Releases a spin lock
-ScopedSpinLockAtDpc::~ScopedSpinLockAtDpc() {
-  KeReleaseInStackQueuedSpinLockFromDpcLevel(&lock_handle_);
-}
