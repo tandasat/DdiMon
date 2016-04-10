@@ -15,7 +15,7 @@
 #include "../HyperPlatform/HyperPlatform/ept.h"
 #include "../HyperPlatform/HyperPlatform/kernel_stl.h"
 #include <array>
-#include "shadow_bp.h"
+#include "shadow_hook.h"
 
 ////////////////////////////////////////////////////////////////////////////////
 //

@@ -5,7 +5,7 @@
 /// @file
 /// Implements DdiMon core functions.
 
-#include "shadow_bp.h"
+#include "shadow_hook.h"
 #include <ntimage.h>
 #define NTSTRSAFE_NO_CB_FUNCTIONS
 #include <ntstrsafe.h>

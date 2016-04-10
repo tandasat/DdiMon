@@ -3,10 +3,10 @@
 // found in the LICENSE file.
 
 /// @file
-/// @brief Declares interfaces to shadow breakpoint functions.
+/// @brief Declares interfaces to shadow hook functions.
 
-#ifndef DDIMON_SHADOW_BP_H_
-#define DDIMON_SHADOW_BP_H_
+#ifndef DDIMON_SHADOW_HOOK_H_
+#define DDIMON_SHADOW_HOOK_H_
 
 #include <fltKernel.h>
 
@@ -88,4 +88,4 @@ _IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C bool SbpCreatePreBreakpoint(
 // implementations
 //
 
-#endif  // DDIMON_SHADOW_BP_H_
+#endif  // DDIMON_SHADOW_HOOK_H_

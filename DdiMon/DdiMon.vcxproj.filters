@@ -48,10 +48,10 @@
     <ClCompile Include="..\HyperPlatform\HyperPlatform\vmm.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="shadow_bp.cpp">
+    <ClCompile Include="..\HyperPlatform\HyperPlatform\kernel_stl.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\HyperPlatform\HyperPlatform\kernel_stl.cpp">
+    <ClCompile Include="shadow_hook.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
@@ -95,10 +95,10 @@
     <ClInclude Include="..\HyperPlatform\HyperPlatform\vmm.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="shadow_bp.h">
+    <ClInclude Include="cs_driver.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="cs_driver.h">
+    <ClInclude Include="shadow_hook.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

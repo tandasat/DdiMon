@@ -144,7 +144,7 @@
     <ClCompile Include="..\HyperPlatform\HyperPlatform\vm.cpp" />
     <ClCompile Include="..\HyperPlatform\HyperPlatform\vmm.cpp" />
     <ClCompile Include="ddi_mon.cpp" />
-    <ClCompile Include="shadow_bp.cpp" />
+    <ClCompile Include="shadow_hook.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\HyperPlatform\HyperPlatform\asm.h" />
@@ -161,7 +161,7 @@
     <ClInclude Include="..\HyperPlatform\HyperPlatform\vmm.h" />
     <ClInclude Include="cs_driver.h" />
     <ClInclude Include="ddi_mon.h" />
-    <ClInclude Include="shadow_bp.h" />
+    <ClInclude Include="shadow_hook.h" />
   </ItemGroup>
   <ItemGroup>
     <MASM Include="..\HyperPlatform\HyperPlatform\Arch\x64\x64.asm">
