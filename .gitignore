@@ -16,8 +16,10 @@
 # Build results
 [Dd]ebug/
 [Dd]ebugPublic/
+[Dd]ebug_WDK/
 [Rr]elease/
 [Rr]eleases/
+[Rr]elease_WDK/
 x64/
 x86/
 build/
