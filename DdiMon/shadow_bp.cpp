@@ -331,8 +331,9 @@ _Use_decl_annotations_ EXTERN_C bool SbpCreatePreBreakpoint(
 
   HYPERPLATFORM_LOG_DEBUG(
       "Patch = %p, Exec = %p, RW = %p, Trampoline = %p", info->patch_address,
-      info->shadow_page_base_for_exec->page,
-      info->shadow_page_base_for_rw->page, target->original_call);
+      info->shadow_page_base_for_exec->page + BYTE_OFFSET(info->patch_address),
+      info->shadow_page_base_for_rw->page + BYTE_OFFSET(info->patch_address), 
+    target->original_call);
 
   shared_sbp_data->breakpoints.push_back(std::move(info));
   return true;
