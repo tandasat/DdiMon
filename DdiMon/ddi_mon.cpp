@@ -94,6 +94,8 @@ static PVOID DdimonpHandleExAllocatePoolWithTag(_In_ POOL_TYPE pool_type,
                                                 _In_ SIZE_T number_of_bytes,
                                                 _In_ ULONG tag);
 
+static VOID DdimonpHandleExFreePool(_Pre_notnull_ PVOID p);
+
 static VOID DdimonpHandleExFreePoolWithTag(_Pre_notnull_ PVOID p,
                                            _In_ ULONG tag);
 
@@ -115,21 +117,15 @@ static NTSTATUS DdimonpHandleNtQuerySystemInformation(
 // variables
 //
 
-// Defines where to set breakpoints and their handlers
+// Defines where to install shadow hooks and their handlers
 //
-// Because of simplified imlementation of DdiMon, it is unable to handle any
+// Because of simplified imlementation of DdiMon, DdiMon is unable to handle any
 // of following exports properly:
 //  - already unmapped exports (eg, ones on the INIT section) because it no
 //    longer exists on memory
 //  - exported data because setting 0xcc does not make any sense in this case
-//  - functions can be called at IRQL higher than DISPATCH_LEVEL because
-//    DdiMon call DDI that cannot be called that IRQL when it handles
-//    breakpoints. Using DDI in a VMM is actually violation of VMM coding best
-//    practice described in HyperPlatform User's Document, but is done to
-//    simplify implementation sine DdiMon is more like demonstration of use of
-//    EPT.
 //  - functions does not comply x64 calling conventions, for example Zw*
-//    functions, because contents of stack do not hold expected values leading
+//    functions. Because contents of stack do not hold expected values leading
 //    handlers to failure of parameter analysis that may result in bug check.
 //
 // Also the following care should be taken:
@@ -137,8 +133,7 @@ static NTSTATUS DdimonpHandleNtQuerySystemInformation(
 //    trusted. Even a kernel-address space pointer should not be trusted for
 //    production level security. Vefity and capture all contents from user
 //    surpplied address to VMM, then use them.
-
-static BreakpointTarget g_ddimonp_breakpoint_targets[] = {
+static ShadowHookTarget g_ddimonp_hook_targets[] = {
     {
         RTL_CONSTANT_STRING(L"EXQUEUEWORKITEM"), DdimonpHandleExQueueWorkItem,
         nullptr,
@@ -146,6 +141,9 @@ static BreakpointTarget g_ddimonp_breakpoint_targets[] = {
     {
         RTL_CONSTANT_STRING(L"EXALLOCATEPOOLWITHTAG"),
         DdimonpHandleExAllocatePoolWithTag, nullptr,
+    },
+    {
+        RTL_CONSTANT_STRING(L"EXFREEPOOL"), DdimonpHandleExFreePool, nullptr,
     },
     {
         RTL_CONSTANT_STRING(L"EXFREEPOOLWITHTAG"),
@@ -164,7 +162,7 @@ static BreakpointTarget g_ddimonp_breakpoint_targets[] = {
 
 // Initializes DdiMon
 _Use_decl_annotations_ EXTERN_C NTSTATUS
-DdimonInitialization(SharedSbpData* shared_sbp_data) {
+DdimonInitialization(SharedShadowHookData* shared_sh_data) {
   HYPERPLATFORM_COMMON_DBG_BREAK();
 
   // Get a base address of ntoskrnl
@@ -173,16 +171,16 @@ DdimonInitialization(SharedSbpData* shared_sbp_data) {
     return STATUS_UNSUCCESSFUL;
   }
 
-  // Initialize a container of breakpoint objects and create them by enumerating
-  // exported symbols by ntoskrnl
+  // Install hooks by enumerating exports of ntoskrnl, but not activate them yet
   auto status = DdimonpEnumExportedSymbols(reinterpret_cast<ULONG_PTR>(nt_base),
                                            DdimonpEnumExportedSymbolsCallback,
-                                           shared_sbp_data);
+                                           shared_sh_data);
   if (!NT_SUCCESS(status)) {
     return status;
   }
 
-  status = SbpStart();
+  // Activate installed hooks
+  status = ShEnableHooks();
   if (!NT_SUCCESS(status)) {
     DdimonpFreeAllocatedTrampolineRegions();
     return status;
@@ -197,19 +195,19 @@ _Use_decl_annotations_ EXTERN_C void DdimonTermination() {
   PAGED_CODE();
   HYPERPLATFORM_COMMON_DBG_BREAK();
 
-  SbpStop();
+  ShDisableHooks();
   UtilSleep(500);
   DdimonpFreeAllocatedTrampolineRegions();
   HYPERPLATFORM_LOG_INFO("DdiMon has been terminated.");
 }
 
-// Frees trampoline code allocated and stored in g_ddimonp_breakpoint_targets by
+// Frees trampoline code allocated and stored in g_ddimonp_hook_targets by
 // DdimonpEnumExportedSymbolsCallback()
 _Use_decl_annotations_ EXTERN_C static void
 DdimonpFreeAllocatedTrampolineRegions() {
   PAGED_CODE();
 
-  for (auto& target : g_ddimonp_breakpoint_targets) {
+  for (auto& target : g_ddimonp_hook_targets) {
     if (target.original_call) {
       ExFreePoolWithTag(target.original_call, kHyperPlatformCommonPoolTag);
       target.original_call = nullptr;
@@ -243,8 +241,7 @@ _Use_decl_annotations_ EXTERN_C static NTSTATUS DdimonpEnumExportedSymbols(
   return STATUS_SUCCESS;
 }
 
-// Determines if the export is listed as a breakpoint target and creates a
-// breakpoint object if so,.
+// Checks if the export is listed as a hook target, and if so install a hook.
 _Use_decl_annotations_ EXTERN_C static bool DdimonpEnumExportedSymbolsCallback(
     ULONG index, ULONG_PTR base_address, PIMAGE_EXPORT_DIRECTORY directory,
     ULONG_PTR directory_base, ULONG_PTR directory_end, void* context) {
@@ -280,19 +277,21 @@ _Use_decl_annotations_ EXTERN_C static bool DdimonpEnumExportedSymbolsCallback(
   UNICODE_STRING name_u = {};
   RtlInitUnicodeString(&name_u, name);
 
-  for (auto& target : g_ddimonp_breakpoint_targets) {
+  for (auto& target : g_ddimonp_hook_targets) {
+    // Is this export listed as a target
     if (!FsRtlIsNameInExpression(&target.target_name, &name_u, TRUE, nullptr)) {
       continue;
     }
 
-    // Yes, create a new breakpoint
-    if (!SbpCreatePreBreakpoint(reinterpret_cast<SharedSbpData*>(context),
-                                reinterpret_cast<void*>(export_address),
-                                &target, export_name)) {
+    // Yes, install a hook to the export
+    if (!ShInstallHook(reinterpret_cast<SharedShadowHookData*>(context),
+                       reinterpret_cast<void*>(export_address), &target,
+                       export_name)) {
+      // This is an error which should not happen
       DdimonpFreeAllocatedTrampolineRegions();
       return false;
     }
-    HYPERPLATFORM_LOG_INFO("Breakpoint has been set to %p %s.", export_address,
+    HYPERPLATFORM_LOG_INFO("Hook has been installed at %p %s.", export_address,
                            export_name);
   }
   return true;
@@ -320,9 +319,9 @@ _Use_decl_annotations_ static std::array<char, 5> DdimonpTagToString(
 }
 
 // Finds a handler to call an original function
- template <typename T>
+template <typename T>
 static T DdimonpFindOrignal(T handler) {
-  for (const auto& target : g_ddimonp_breakpoint_targets) {
+  for (const auto& target : g_ddimonp_hook_targets) {
     if (target.handler == handler) {
       NT_ASSERT(target.original_call);
       return reinterpret_cast<T>(target.original_call);
@@ -332,11 +331,26 @@ static T DdimonpFindOrignal(T handler) {
   return nullptr;
 }
 
-// Pre-ExFreePoolWithTag. Logs if the DDI is called from where not backed by
-// any image
+// The hook handler for ExFreePool(). Logs if ExFreePool() is called from where
+// not backed by any image
+_Use_decl_annotations_ static VOID DdimonpHandleExFreePool(PVOID p) {
+  const auto original = DdimonpFindOrignal(DdimonpHandleExFreePool);
+  original(p);
+
+  // Is inside image?
+  auto return_addr = _ReturnAddress();
+  if (UtilPcToFileHeader(return_addr)) {
+    return;
+  }
+
+  HYPERPLATFORM_LOG_INFO_SAFE("%p: ExFreePool(P= %p)", return_addr, p
+                              );
+}
+
+// The hook handler for ExFreePoolWithTag(). Logs if ExFreePoolWithTag() is
+// called from where not backed by any image.
 _Use_decl_annotations_ static VOID DdimonpHandleExFreePoolWithTag(PVOID p,
                                                                   ULONG tag) {
-  // HYPERPLATFORM_COMMON_DBG_BREAK();
   const auto original = DdimonpFindOrignal(DdimonpHandleExFreePoolWithTag);
   original(p, tag);
 
@@ -347,15 +361,14 @@ _Use_decl_annotations_ static VOID DdimonpHandleExFreePoolWithTag(PVOID p,
   }
 
   HYPERPLATFORM_LOG_INFO_SAFE(
-      "%ExFreePoolWithTag(P= %p, Tag= %s) returning to %p", p,
-      DdimonpTagToString(tag).data(), return_addr);
+      "%p: ExFreePoolWithTag(P= %p, Tag= %s)", return_addr, p,
+      DdimonpTagToString(tag).data());
 }
 
-// Pre-ExQueueWorkItem. Logs if a WorkerRoutine points to where not backed by
-// any image.
+// The hook handler for ExQueueWorkItem(). Logs if a WorkerRoutine points to
+// where not backed by any image.
 _Use_decl_annotations_ static VOID DdimonpHandleExQueueWorkItem(
     PWORK_QUEUE_ITEM work_item, WORK_QUEUE_TYPE queue_type) {
-  // HYPERPLATFORM_COMMON_DBG_BREAK();
   const auto original = DdimonpFindOrignal(DdimonpHandleExQueueWorkItem);
   original(work_item, queue_type);
 
@@ -366,15 +379,14 @@ _Use_decl_annotations_ static VOID DdimonpHandleExQueueWorkItem(
 
   auto return_addr = _ReturnAddress();
   HYPERPLATFORM_LOG_INFO_SAFE(
-      "ExQueueWorkItem({Routine= %p, Parameter= %p}, %d) returning to %p",
-      work_item->WorkerRoutine, work_item->Parameter, queue_type, return_addr);
+      "%p: ExQueueWorkItem({Routine= %p, Parameter= %p}, %d)",
+    return_addr, work_item->WorkerRoutine, work_item->Parameter, queue_type);
 }
 
-// Pre-ExAllocatePoolWithTag. Logs if the DDI is called from where not backed by
-// any image and sets post breakpoint if so.
+// The hook handler for ExAllocatePoolWithTag(). Logs if ExAllocatePoolWithTag()
+// is called from where not backed by any image.
 _Use_decl_annotations_ static PVOID DdimonpHandleExAllocatePoolWithTag(
     POOL_TYPE pool_type, SIZE_T number_of_bytes, ULONG tag) {
-  // HYPERPLATFORM_COMMON_DBG_BREAK();
   const auto original = DdimonpFindOrignal(DdimonpHandleExAllocatePoolWithTag);
   const auto result = original(pool_type, number_of_bytes, tag);
 
@@ -385,19 +397,18 @@ _Use_decl_annotations_ static PVOID DdimonpHandleExAllocatePoolWithTag(
   }
 
   HYPERPLATFORM_LOG_INFO_SAFE(
-      "ExAllocatePoolWithTag(POOL_TYPE= %08x, NumberOfBytes= %08X, Tag= %s) => "
-      "%p returning to %p",
-      pool_type, number_of_bytes, DdimonpTagToString(tag).data(), result,
-      return_addr);
+    "%p: ExAllocatePoolWithTag(POOL_TYPE= %08x, NumberOfBytes= %08X, Tag= %s) => "
+      "%p", return_addr,
+      pool_type, number_of_bytes, DdimonpTagToString(tag).data(), result
+      );
   return result;
 }
 
-// Pre-NtQuerySystemInformation. Sets post breakpoint if it is quering a list
-// of processes.
+// The hook handler for NtQuerySystemInformation(). Removes an entry for cmd.exe
+// and hides it from being listed.
 _Use_decl_annotations_ static NTSTATUS DdimonpHandleNtQuerySystemInformation(
     SystemInformationClass system_information_class, PVOID system_information,
     ULONG system_information_length, PULONG return_length) {
-  // HYPERPLATFORM_COMMON_DBG_BREAK();
   const auto original =
       DdimonpFindOrignal(DdimonpHandleNtQuerySystemInformation);
   const auto result = original(system_information_class, system_information,

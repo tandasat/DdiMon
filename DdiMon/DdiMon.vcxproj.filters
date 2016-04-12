@@ -54,6 +54,9 @@
     <ClCompile Include="shadow_hook.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="cs_driver_mm.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="ddi_mon.h">
@@ -95,10 +98,10 @@
     <ClInclude Include="..\HyperPlatform\HyperPlatform\vmm.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="cs_driver.h">
+    <ClInclude Include="shadow_hook.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="shadow_hook.h">
+    <ClInclude Include="cs_driver_mm.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

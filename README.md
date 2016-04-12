@@ -3,30 +3,28 @@ DdiMon
 
 Introduction
 -------------
-DdiMon is a hypervisor providing a breakpoint that is invisible to a guest using
-extended page table (EPT) for monitoring and controlling calls to the device
-driver interfaces (DDIs, ie, the Windows kernel APIs).
+DdiMon is a hypervisor performing inline hooking that is invisible to a guest (ie, any code other than DdiMon) by using extended page table (EPT). 
 
 DdiMon is meant to be an educational tool for understanding how to use EPT from
-a programming perspective for reverse engineering. To demonstrate it, DdiMon
-sets the invisible breakpoints on the following DDIs to monitor activities of
+a programming perspective for research. To demonstrate it, DdiMon
+installs the invisible inline hooks on the following device driver interfaces (DDIs) to monitor activities of
 the Windows built-in kernel patch protection, a.k.a. PatchGuard, and hide
 certain processes without being detected by PatchGuard.
 - ExQueueWorkItem
 - ExAllocatePoolWithTag
-- ExFreePool
+- ExFreePool                  << missing
 - ExFreePoolWithTag
 - NtQuerySystemInformation
 
-Those stealth breakpoints are hidden from guest's read and write memory
+Those stealth shadow hooks are hidden from guest's read and write memory
 operations and exposed only on execution of the memory. Therefore, they are
-neither visible nor overwritable from a guest, while they function as breakpoint.
-It is accomplished by making use of EPT allowing you to enforce a guest to
-see a different memory contents from what it would see if EPT is not in use.
+neither visible nor overwritable from a guest, while they function as ordinal hooks.
+It is accomplished by making use of EPT enforcing a guest to
+see different memory contents from what it would see if EPT is not in use.
 This technique is often called memory shadowing. For more details, see the
 Design section below.
 
-Here is a movie demonstrating that stealth breakpoints allow you to monitor and
+Here is a movie demonstrating that shadow hooks allow you to monitor and
 control DDI calls without being notified by PatchGuard.
 - https://www.youtube.com/watch?v=UflyX3GeYkw
 
@@ -43,12 +41,6 @@ the following command, and then restart the system to activate the change:
 
     bcdedit /set testsigning on
 
-Since DdiMon supports only uni-processor systems currently (#1), a system
-with more than one processors must change a number of active processors
-with below command, and then restart the system to activate the change:
-
-    bcdedit /set numproc 1
-
 To install and uninstall the driver, use the 'sc' command. For installation:
 
     >sc create DdiMon type= kernel binPath= C:\Users\user\Desktop\DdiMon.sys
@@ -58,7 +50,6 @@ And for uninstallation:
 
     >sc stop DdiMon
     >sc delete DdiMon
-    >bcdedit /deletevalue numproc
     >bcdedit /deletevalue testsigning
 
 Note that the system must support the Intel VT-x and EPT technology to
@@ -77,17 +68,17 @@ All logs are printed out to DbgView and saved in C:\Windows\DdiMon.log.
 
 Motivation
 -----------
-
 Despite existence of plenty of academic research projects[1,2,3] and production
 software[4,5], EPT (a.k.a. SLAT; second-level-address translation) is still
 underused technology among reverse engineers due to lack of information on how
-it works and can be controlled through programming.
+it works and how to controll it through programming.
 
 MoRE[6] by Jacob Torrey is a one of very few open source projects demonstrating
 use of EPT with small amount of code. While we recommend to look into the
-project for basic comprehension of how EPT can be initialized and used for
-providing more than 1:1 mapping, MoRE lacks flexibility to extend its code for
-supporting broader platforms and implementing your own analysis tools.
+project for basic comprehension of how EPT can be initialized and used to set up
+more than 1:1 guest to machine physiocal memory mapping, MoRE lacks flexibility
+to extend its code for supporting broader platforms and implementing your own 
+analysis tools.
 
 DdiMon provides a similar sample use of EPT as what MoRE does with a greater
 range of platform support such as x64 and/or Windows 10. DdiMon, also, can be
@@ -111,12 +102,10 @@ seen as example extension of HyperPlatform for memory virtualization.
 
 Design
 -------
-
-In order to set a stealth breakpoint, DdiMon creates a couple of copies of a
-page where the address to set breakpoint belongs to. After DdiMon is initialized,
-those two pages are accessed when a guest, namely anything except for ones by the
-hypervisor, attempts to access to the original page instead. For example, when
-DdiMon sets a stealth breakpoint on 0x1234, actual access is performed as below:
+In order to isntall a shadow hook, DdiMon creates a couple of copies of a
+page where the address to isntall a hook belongs to. After DdiMon is initialized,
+those two pages are accessed when a guest, namely all but ones by the
+hypervisor (ie, DdiMon), attempts to access to the original page instead. For example, when DdiMon installs a hook onto 0x1234, two copied pages are created: 0xa000 for execution access and 0xb000 for read or write access, and memory access is performed as below after the hook is activated:
 
                    Requested    Accessed
     By Hypervisor: 0x1234    -> 0x1234 on all access
@@ -127,14 +116,17 @@ The following explains how it is accomplished.
 
 **Default state**
 
-This is done by configuring an EPT entry corresponds to 0x1000-0x1fff to
+DdiMon first configures an EPT entry corresponds to 0x1000-0x1fff to
 refer to contents of 0xa000 and to disallow read and write access to the page.
 
 **Scenario: Read or Write**
 
 1. With this configuration, any read and write access triggers EPT violation
 VM-exit. Up on the VM-exit, the EPT entry for 0x1000-0x1fff is modified to refer
+<<<<<<< 3aa800e68a34fdc9c3c50bc4f9a6f73a61b7bdfd
 to contents of 0xb000 and to allow read and write to the page. And then, sets
+=======
+to the contents of 0xb000, which is copy of 0x1000, and to allow read and write to the page. And then, sets
 the Monitor Trap Flag (MTF), which works as if the Trap Flag of the flag register
 but not visible to a guest, so that a guest can perform the read or write
 operation and then interrupted by the hypervisor with MTF VM-exit.
@@ -149,17 +141,27 @@ instruction reading from or writing to 0xb234.
 **Scenario: Execute**
 
 Execution is done against contents of 0xa000 without triggering any events if
-no other setting is done. It is fine, and how to monitor execution of 0xa234
-(0x1234 from guest's perspective) is left to developers. One option is
-installing inline hook and transfering execution to instrumentation code
-without triggering VM-exit. DdiMon sets 0xcc to 0xa234 and handles #BP in the
-hypervisor instead, just because it does not require a disassembler. The 
+no other setting is made. It is fine, and how to monitor execution of 0xa234
+(0x1234 from guest's perspective) is left to developers. DdiMon sets 0xcc to 
+0xa234 and handles #BP in the hypervisor. 
+
+
+
 following steps are how DdiMon monitors execution of 0xa234.
 
-1. On #BP VM-exit, the hypervisor checks if guest IP is 0x1234 first. If so, 
-next, it checks if contents of 0xb234 is 0xcc. If so, it is a breakpoint set
-by a guest, and the #BP should be delivered to a guest instead. If not the case, 
-the hypervisor runs a specified handler to instrument the DDI call and sets a 
+1. On #BP VM-exit, the hypervisor checks if guest IP is 0x1234 first. Next, it checks if contents of 0xb234 is 0xcc.          << missing 
+
+
+If so, it is a breakpoint set by a guest, and the #BP should be delivered to a guest instead. If not the case, the hypervisor changes the contents of guest's EIP/RIP register to point to a corresponding hook handler function for instrumenting the DII call. Then,  the hypervisor configures an EPT entry corresponds to 0x1000-0x1fff to refer to contents of 0xb000
+ 
+
+
+
+. For example,  
+
+
+
+runs a specified handler to instrument the DDI call and sets a 
 new breakpoint at a return address if a post handler is given. After that, just 
 like the case of the read and write access, the hypervisor changes an EPT entry
 corresponds to 0x1000-0x1fff to refer to contents of 0xb000 and sets MTF so that 
@@ -181,10 +183,10 @@ The following are a call hierarchy with regard to sequences explained above.
     DdimonInitialization()
       // Enumerates exports of ntoskrnl
       DdimonpEnumExportedSymbolsCallback()
-        // Creates stealth breakpoint without activating it
+        // Creates shadow breakpoint without activating it
         SbpCreatePreBreakpoint()
       SbpStart()
-        // Activates all stealth breakpoints
+        // Activates all shadow breakpoints
         SbpVmCallEnablePageShadowing()
           // Configure an EPT entry as explained in "Default state"
           SbppEnablePageShadowingForExec()
@@ -211,22 +213,21 @@ The following are a call hierarchy with regard to sequences explained above.
 
 Implemented Breakpoint Handlers
 --------------------------------
-- ExQueueWorkItem (Pre)
-A pre-handler prints out given parameters when a specified work item routine is
+- ExQueueWorkItem 
+The hook handler prints out given parameters when a specified work item routine is
 not inside any images.
 
-- ExAllocatePoolWithTag (Pre and Post)
-A pre-handler prints out given parameters when it is called from an address
-where is not backed by any images. A post-handler prints out a return value of
-the DDI.
+- ExAllocatePoolWithTag 
+The hook handler prints out given parameters and a return value of ExAllocatePoolWithTag() when it is called from an address
+where is not backed by any images.
 
-- ExFreePool and ExFreePoolWithTag (Pre)
-Pre-handlers print out given parameters when they are called from addresses
+- ExFreePool and ExFreePoolWithTag
+The hook handlers print out given parameters when they are called from addresses
 where are not backed by any images.
 
-- NtQuerySystemInformation (Post)
-A post-handler takes out an entry for "cmd.exe" from returned process
-information so that cmd.exe can be hidden from process enumeration.
+- NtQuerySystemInformation
+The hook handler takes out an entry for "cmd.exe" from returned process
+information so that cmd.exe is not listed by process enumeration.
 
 The easiest way to see those logs is installing NoImage.sys.
 - https://github.com/tandasat/MemoryMon/tree/master/MemoryMonTest
@@ -253,7 +254,6 @@ Supported Platforms
 ----------------------
 - x86 and x64 Windows 7, 8.1 and 10
 - The system must support the Intel VT-x and EPT technology
-- Uni-processor systems (the author is working for taking off this limitation #1)
 
 
 License

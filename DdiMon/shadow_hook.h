@@ -26,13 +26,16 @@
 //
 
 struct EptData;
-struct SbpData;
-struct SharedSbpData;
+struct ShadowHookData;
+struct SharedShadowHookData;
 
-// Expresses where to set a breakpoint by a function name and its handlers
-struct BreakpointTarget {
-  UNICODE_STRING target_name;
-  void* handler;
+// Expresses where to install hooks by a function name, and its handlers
+struct ShadowHookTarget {
+  UNICODE_STRING target_name;  // An export name to hook
+  void* handler;               // An address of a hook handler
+
+  // An address of a trampoline code to call original function. Initialized by
+  // a successful call of ShInstallHook().
   void* original_call;
 };
 
@@ -41,42 +44,46 @@ struct BreakpointTarget {
 // prototypes
 //
 
-_IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C SbpData* SbpInitialization();
+_IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C
+    ShadowHookData* ShAllocateShadowHookData();
 
 _IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C
-    void SbpTermination(_In_ SbpData* sbp_data);
-
-_IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C 
-    SharedSbpData* SbpAllocateSharedData();
+    void ShFreeShadowHookData(_In_ ShadowHookData* sh_data);
 
 _IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C
-    void SbpFreeSharedData(_In_ SharedSbpData* shared_sbp_data);
+    SharedShadowHookData* ShAllocateSharedShaowHookData();
 
-_IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C NTSTATUS SbpStart();
+_IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C
+    void ShFreeSharedShadowHookData(_In_ SharedShadowHookData* shared_sh_data);
 
-_IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C NTSTATUS SbpStop();
+_IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C NTSTATUS ShEnableHooks();
 
-_IRQL_requires_min_(DISPATCH_LEVEL) void SbpVmCallDisablePageShadowing(
-    _In_ EptData* ept_data, _In_ void* context);
+_IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C NTSTATUS ShDisableHooks();
 
 _IRQL_requires_min_(DISPATCH_LEVEL) NTSTATUS
-    SbpVmCallEnablePageShadowing(_In_ EptData* ept_data, _In_ void* context);
+    ShEnablePageShadowing(_In_ EptData* ept_data,
+                          _In_ const SharedShadowHookData* shared_sh_data);
 
-_IRQL_requires_min_(DISPATCH_LEVEL) void* SbpHandleBreakpoint(
-  _In_ SbpData* sbp_data, _In_  SharedSbpData* shared_sbp_data, 
-  _In_ void* guest_ip);
+_IRQL_requires_min_(DISPATCH_LEVEL) void ShVmCallDisablePageShadowing(
+    _In_ EptData* ept_data, _In_ const SharedShadowHookData* shared_sh_data);
 
-_IRQL_requires_min_(DISPATCH_LEVEL) void SbpHandleMonitorTrapFlag(
-    _In_ SbpData* sbp_data, _In_ SharedSbpData* shared_sbp_data,
-    _In_ EptData* ept_data);
+_IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C
+    bool ShInstallHook(_In_ SharedShadowHookData* shared_sh_data,
+                       _In_ void* address, _In_ ShadowHookTarget* target,
+                       _In_ const char* name);
 
-_IRQL_requires_min_(DISPATCH_LEVEL) void SbpHandleEptViolation(
-    _In_ SbpData* sbp_data, _In_ SharedSbpData* shared_sbp_data,
-    _In_ EptData* ept_data, _In_ void* fault_va);
+_IRQL_requires_min_(DISPATCH_LEVEL) bool ShHandleBreakpoint(
+    _In_ ShadowHookData* sh_data,
+    _In_ const SharedShadowHookData* shared_sh_data, _In_ void* guest_ip);
 
-_IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C bool SbpCreatePreBreakpoint(
-    _In_ SharedSbpData* shared_sbp_data, _In_ void* address,
-    _In_ BreakpointTarget* target, _In_ const char* name);
+_IRQL_requires_min_(DISPATCH_LEVEL) void ShHandleMonitorTrapFlag(
+    _In_ ShadowHookData* sh_data,
+    _In_ const SharedShadowHookData* shared_sh_data, _In_ EptData* ept_data);
+
+_IRQL_requires_min_(DISPATCH_LEVEL) void ShHandleEptViolation(
+    _In_ ShadowHookData* sh_data,
+    _In_ const SharedShadowHookData* shared_sh_data, _In_ EptData* ept_data,
+    _In_ void* fault_va);
 
 ////////////////////////////////////////////////////////////////////////////////
 //
