@@ -158,9 +158,9 @@ and takes action accordingly.
 
 This is just like a typical inline hooking. Only differences are that it sets
 0xcc and changes EIP/RIP from a hypervisor instead of overwriting original code
-with JMP code to a hook handler and that installed hooks are not visible from a
-guest.
-
+with JMP instructions and that installed hooks are not visible from a guest. An
+advantage of using 0xcc is that it does not require a target function to have a
+length to overwrite 
 
 Implementation
 ---------------
