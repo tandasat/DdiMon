@@ -3,26 +3,27 @@ DdiMon
 
 Introduction
 -------------
-DdiMon is a hypervisor performing inline hooking that is invisible to a guest (ie, any code other than DdiMon) by using extended page table (EPT). 
+DdiMon is a hypervisor performing inline hooking that is invisible to a guest 
+(ie, any code other than DdiMon) by using extended page table (EPT). 
 
 DdiMon is meant to be an educational tool for understanding how to use EPT from
-a programming perspective for research. To demonstrate it, DdiMon
-installs the invisible inline hooks on the following device driver interfaces (DDIs) to monitor activities of
-the Windows built-in kernel patch protection, a.k.a. PatchGuard, and hide
-certain processes without being detected by PatchGuard.
+a programming perspective for research. To demonstrate it, DdiMon installs the
+invisible inline hooks on the following device driver interfaces (DDIs) to 
+monitor activities of the Windows built-in kernel patch protection, a.k.a. 
+PatchGuard, and hide certain processes without being detected by PatchGuard.
 - ExQueueWorkItem
 - ExAllocatePoolWithTag
-- ExFreePool                  << missing
+- ExFreePool
 - ExFreePoolWithTag
 - NtQuerySystemInformation
 
 Those stealth shadow hooks are hidden from guest's read and write memory
 operations and exposed only on execution of the memory. Therefore, they are
-neither visible nor overwritable from a guest, while they function as ordinal hooks.
-It is accomplished by making use of EPT enforcing a guest to
-see different memory contents from what it would see if EPT is not in use.
-This technique is often called memory shadowing. For more details, see the
-Design section below.
+neither visible nor overwritable from a guest, while they function as ordinal
+hooks. It is accomplished by making use of EPT enforcing a guest to see 
+different memory contents from what it would see if EPT is not in use. This 
+technique is often called memory shadowing. For more details, see the Design 
+section below.
 
 Here is a movie demonstrating that shadow hooks allow you to monitor and
 control DDI calls without being notified by PatchGuard.
@@ -102,10 +103,13 @@ seen as example extension of HyperPlatform for memory virtualization.
 
 Design
 -------
-In order to isntall a shadow hook, DdiMon creates a couple of copies of a
-page where the address to isntall a hook belongs to. After DdiMon is initialized,
-those two pages are accessed when a guest, namely all but ones by the
-hypervisor (ie, DdiMon), attempts to access to the original page instead. For example, when DdiMon installs a hook onto 0x1234, two copied pages are created: 0xa000 for execution access and 0xb000 for read or write access, and memory access is performed as below after the hook is activated:
+In order to isntall a shadow hook, DdiMon creates a couple of copies of a page
+where the address to isntall a hook belongs to. After DdiMon is initialized,
+those two pages are accessed when a guest, namely all but ones by the hypervisor
+(ie, DdiMon), attempts to access to the original page instead. For example, when
+DdiMon installs a hook onto 0x1234, two copied pages are created: 0xa000 for 
+execution access and 0xb000 for read or write access, and memory access is 
+performed as below after the hook is activated:
 
                    Requested    Accessed
     By Hypervisor: 0x1234    -> 0x1234 on all access
@@ -116,20 +120,18 @@ The following explains how it is accomplished.
 
 **Default state**
 
-DdiMon first configures an EPT entry corresponds to 0x1000-0x1fff to
-refer to contents of 0xa000 and to disallow read and write access to the page.
+DdiMon first configures an EPT entry corresponds to 0x1000-0x1fff to refer to 
+the contents of 0xa000 and to disallow read and write access to the page.
 
 **Scenario: Read or Write**
 
 1. With this configuration, any read and write access triggers EPT violation
 VM-exit. Up on the VM-exit, the EPT entry for 0x1000-0x1fff is modified to refer
-<<<<<<< 3aa800e68a34fdc9c3c50bc4f9a6f73a61b7bdfd
-to contents of 0xb000 and to allow read and write to the page. And then, sets
-=======
-to the contents of 0xb000, which is copy of 0x1000, and to allow read and write to the page. And then, sets
-the Monitor Trap Flag (MTF), which works as if the Trap Flag of the flag register
-but not visible to a guest, so that a guest can perform the read or write
-operation and then interrupted by the hypervisor with MTF VM-exit.
+to the contents of 0xb000, which is copy of 0x1000, and to allow read and write 
+to the page. And then, sets the Monitor Trap Flag (MTF), which works like the 
+Trap Flag of the flag register but not visible to a guest, so that a guest can 
+perform the read or write operation and then interrupted by the hypervisor with 
+MTF VM-exit.
 
 2. After executing a single instruction, a guest is interrupted by MTF VM-exit.
 On this VM-exit, the hypervisor clears the MTF and resets the EPT entry to the
@@ -140,38 +142,24 @@ instruction reading from or writing to 0xb234.
 
 **Scenario: Execute**
 
-Execution is done against contents of 0xa000 without triggering any events if
-no other setting is made. It is fine, and how to monitor execution of 0xa234
-(0x1234 from guest's perspective) is left to developers. DdiMon sets 0xcc to 
-0xa234 and handles #BP in the hypervisor. 
+At this time, execution is done against contents of 0xa000 without triggering 
+any events unless no other settings is made. In order to monitor execution of 
+0xa234 (0x1234 from guest's perspective), DdiMon sets a break point (0xcc) to 
+0xa234 and handles #BP in the hypervisor. Following steps are how DdiMon 
+hooks execution of 0xa234.
 
+1. On #BP VM-exit, the hypervisor checks if guest's EIP/RIP is 0x1234 first. If
+so, the hypervisor changes the contents of the register to point to a 
+corresponding hook handler for instrumenting the DDI call.
 
+2. On VM-enter, a guest executes the hook handler. The hook handler calls an 
+original function, examines parameters, return values and/or a return address,
+and takes action accordingly. 
 
-following steps are how DdiMon monitors execution of 0xa234.
-
-1. On #BP VM-exit, the hypervisor checks if guest IP is 0x1234 first. Next, it checks if contents of 0xb234 is 0xcc.          << missing 
-
-
-If so, it is a breakpoint set by a guest, and the #BP should be delivered to a guest instead. If not the case, the hypervisor changes the contents of guest's EIP/RIP register to point to a corresponding hook handler function for instrumenting the DII call. Then,  the hypervisor configures an EPT entry corresponds to 0x1000-0x1fff to refer to contents of 0xb000
- 
-
-
-
-. For example,  
-
-
-
-runs a specified handler to instrument the DDI call and sets a 
-new breakpoint at a return address if a post handler is given. After that, just 
-like the case of the read and write access, the hypervisor changes an EPT entry
-corresponds to 0x1000-0x1fff to refer to contents of 0xb000 and sets MTF so that 
-a guest can run an original instruction and be interrupted then.
-
-2. On MTF VM-exit, the exact same operations are done as the case of the read and
-write access.
-
-As a result of this sequence of operations, a guest executed a single
-instruction at 0xa234 with being instrumented.
+This is just like a typical inline hooking. Only differences are that it sets
+0xcc and changes EIP/RIP from a hypervisor instead of overwriting original code
+with JMP code to a hook handler and that installed hooks are not visible from a
+guest.
 
 
 Implementation
