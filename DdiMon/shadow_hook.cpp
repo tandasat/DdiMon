@@ -61,19 +61,14 @@ struct HookInformation {
   std::array<char, 64> name;
 };
 
-//
+// Data structure shared across all processors
 struct SharedShadowHookData {
-  // Holds all currently installed hooks
-  std::vector<std::unique_ptr<HookInformation>> hooks;
+  std::vector<std::unique_ptr<HookInformation>> hooks;  // Hold installed hooks
 };
 
-//
+// Data structure for each processor
 struct ShadowHookData {
-  // Remember which hook hit the last
-  const HookInformation* last_hook_info;
-
-  // Remember a value of guests eflags.IT
-  bool previouse_interrupt_flag;
+  const HookInformation* last_hook_info;  // Remember which hook hit the last
 };
 
 // A structure reflects inline hook code.
@@ -174,7 +169,9 @@ static bool ShpIsShadowHookActive(
 _Use_decl_annotations_ EXTERN_C ShadowHookData* ShAllocateShadowHookData() {
   PAGED_CODE();
 
-  return new ShadowHookData();
+  auto p = new ShadowHookData();
+  RtlFillMemory(p, sizeof(ShadowHookData), 0);
+  return p;
 }
 
 // Terminates DdiMon
@@ -194,7 +191,9 @@ ShAllocateSharedShaowHookData() {
     return nullptr;
   }
 
-  return new SharedShadowHookData();
+  auto p = new SharedShadowHookData();
+  RtlFillMemory(p, sizeof(SharedShadowHookData), 0);
+  return p;
 }
 
 //
@@ -457,9 +456,10 @@ _Use_decl_annotations_ EXTERN_C static TrampolineCode ShpMakeTrampolineCode(
   PAGED_CODE();
 
 #if defined(_AMD64_)
-  //          jmp qword ptr [nextline]
-  // nextline:
-  //          dq hook_handler
+  // 90               nop
+  // ff2500000000     jmp     qword ptr cs:jmp_addr
+  // jmp_addr:
+  // 0000000000000000 dq 0
   return {
       0x90,
       {
@@ -468,9 +468,9 @@ _Use_decl_annotations_ EXTERN_C static TrampolineCode ShpMakeTrampolineCode(
       hook_handler,
   };
 #else
-  // 90              nop
-  // 6832e30582      push    offset nt!ExFreePoolWithTag + 0x2 (8205e332)
-  // c3              ret
+  // 90               nop
+  // 6832e30582       push    offset nt!ExFreePoolWithTag + 0x2 (8205e332)
+  // c3               ret
   return {
       0x90, 0x68, hook_handler, 0xc3,
   };
@@ -549,29 +549,13 @@ _Use_decl_annotations_ static void ShpDisablePageShadowing(
   UtilInveptAll();
 }
 
-// Set MTF on the current processor, and modifies guest's TF accordingly.
+// Set MTF on the current processor
 _Use_decl_annotations_ static void ShpSetMonitorTrapFlag(
     ShadowHookData* sh_data, bool enable) {
   VmxProcessorBasedControls vm_procctl = {
       static_cast<unsigned int>(UtilVmRead(VmcsField::kCpuBasedVmExecControl))};
   vm_procctl.fields.monitor_trap_flag = enable;
   UtilVmWrite(VmcsField::kCpuBasedVmExecControl, vm_procctl.all);
-
-  // When enabling MTF, disables maskable interrupt on a guest to ensure a next
-  // execution occurs on the next instruction and not on an interrupt handler.
-  // It is required because Windows can shedule clock interruption (eg, 0xd1) on
-  // VM-enter when VMM took long time on VM-exit handling. The author is woking
-  // hard for taking off this requirement. See #11 in the HyperPlatform project.
-  FlagRegister flags = {UtilVmRead(VmcsField::kGuestRflags)};
-  if (enable) {
-    // clear IF
-    sh_data->previouse_interrupt_flag = flags.fields.intf;
-    flags.fields.intf = false;
-  } else {
-    // restore IF
-    flags.fields.intf = sh_data->previouse_interrupt_flag;
-  }
-  UtilVmWrite(VmcsField::kGuestRflags, flags.all);
 }
 
 // Saves HookInformation as the last one for reusing it on up coming MTF VM-exit
