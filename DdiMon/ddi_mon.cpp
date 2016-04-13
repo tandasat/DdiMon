@@ -343,8 +343,7 @@ _Use_decl_annotations_ static VOID DdimonpHandleExFreePool(PVOID p) {
     return;
   }
 
-  HYPERPLATFORM_LOG_INFO_SAFE("%p: ExFreePool(P= %p)", return_addr, p
-                              );
+  HYPERPLATFORM_LOG_INFO_SAFE("%p: ExFreePool(P= %p)", return_addr, p);
 }
 
 // The hook handler for ExFreePoolWithTag(). Logs if ExFreePoolWithTag() is
@@ -360,9 +359,8 @@ _Use_decl_annotations_ static VOID DdimonpHandleExFreePoolWithTag(PVOID p,
     return;
   }
 
-  HYPERPLATFORM_LOG_INFO_SAFE(
-      "%p: ExFreePoolWithTag(P= %p, Tag= %s)", return_addr, p,
-      DdimonpTagToString(tag).data());
+  HYPERPLATFORM_LOG_INFO_SAFE("%p: ExFreePoolWithTag(P= %p, Tag= %s)",
+                              return_addr, p, DdimonpTagToString(tag).data());
 }
 
 // The hook handler for ExQueueWorkItem(). Logs if a WorkerRoutine points to
@@ -370,17 +368,21 @@ _Use_decl_annotations_ static VOID DdimonpHandleExFreePoolWithTag(PVOID p,
 _Use_decl_annotations_ static VOID DdimonpHandleExQueueWorkItem(
     PWORK_QUEUE_ITEM work_item, WORK_QUEUE_TYPE queue_type) {
   const auto original = DdimonpFindOrignal(DdimonpHandleExQueueWorkItem);
-  original(work_item, queue_type);
 
   // Is inside image?
   if (UtilPcToFileHeader(work_item->WorkerRoutine)) {
+    // Call an original after checking parameters. It is common that a work
+    // routine frees a work_item object resulting in wrong analysis.
+    original(work_item, queue_type);
     return;
   }
 
   auto return_addr = _ReturnAddress();
   HYPERPLATFORM_LOG_INFO_SAFE(
-      "%p: ExQueueWorkItem({Routine= %p, Parameter= %p}, %d)",
-    return_addr, work_item->WorkerRoutine, work_item->Parameter, queue_type);
+      "%p: ExQueueWorkItem({Routine= %p, Parameter= %p}, %d)", return_addr,
+      work_item->WorkerRoutine, work_item->Parameter, queue_type);
+
+  original(work_item, queue_type);
 }
 
 // The hook handler for ExAllocatePoolWithTag(). Logs if ExAllocatePoolWithTag()
@@ -397,10 +399,10 @@ _Use_decl_annotations_ static PVOID DdimonpHandleExAllocatePoolWithTag(
   }
 
   HYPERPLATFORM_LOG_INFO_SAFE(
-    "%p: ExAllocatePoolWithTag(POOL_TYPE= %08x, NumberOfBytes= %08X, Tag= %s) => "
-      "%p", return_addr,
-      pool_type, number_of_bytes, DdimonpTagToString(tag).data(), result
-      );
+      "%p: ExAllocatePoolWithTag(POOL_TYPE= %08x, NumberOfBytes= %08X, Tag= "
+      "%s) => %p",
+      return_addr, pool_type, number_of_bytes, DdimonpTagToString(tag).data(),
+      result);
   return result;
 }
 

@@ -210,7 +210,8 @@ _Use_decl_annotations_ EXTERN_C NTSTATUS ShEnableHooks() {
   PAGED_CODE();
 
   return UtilForEachProcessor(
-      [](void*) {
+      [](void* context) {
+        UNREFERENCED_PARAMETER(context);
         return UtilVmCall(HypercallNumber::kShEnablePageShadowing, nullptr);
       },
       nullptr);
@@ -221,7 +222,8 @@ _Use_decl_annotations_ EXTERN_C NTSTATUS ShDisableHooks() {
   PAGED_CODE();
 
   return UtilForEachProcessor(
-      [](void*) {
+      [](void* context) {
+        UNREFERENCED_PARAMETER(context);
         return UtilVmCall(HypercallNumber::kShDisablePageShadowing, nullptr);
       },
       nullptr);
