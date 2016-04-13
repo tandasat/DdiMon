@@ -83,7 +83,7 @@ struct ShadowHookData {
 struct TrampolineCode {
   UCHAR nop;
   UCHAR jmp[6];
-  void* FunctionAddress;
+  void* address;
 };
 static_assert(sizeof(TrampolineCode) == 15, "Size check");
 
@@ -92,7 +92,7 @@ static_assert(sizeof(TrampolineCode) == 15, "Size check");
 struct TrampolineCode {
   UCHAR nop;
   UCHAR push;
-  void* FunctionAddress;
+  void* address;
   UCHAR ret;
 };
 static_assert(sizeof(TrampolineCode) == 7, "Size check");
@@ -140,12 +140,13 @@ static void ShpSetMonitorTrapFlag(_In_ ShadowHookData* sh_data,
                                   _In_ bool enable);
 
 static void ShpSaveLastHookInfo(_In_ ShadowHookData* sh_data,
-                                 _In_ const HookInformation& info);
+                                _In_ const HookInformation& info);
 
 static const HookInformation* ShpRestoreLastHookInfo(
     _In_ ShadowHookData* sh_data);
 
-static bool ShpIsShadowHookActive(_In_ const SharedShadowHookData* shared_sh_data);
+static bool ShpIsShadowHookActive(
+    _In_ const SharedShadowHookData* shared_sh_data);
 
 #if defined(ALLOC_PRAGMA)
 #pragma alloc_text(INIT, ShAllocateShadowHookData)
@@ -210,7 +211,7 @@ _Use_decl_annotations_ EXTERN_C NTSTATUS ShEnableHooks() {
 
   return UtilForEachProcessor(
       [](void*) {
-        return UtilVmCall(HypercallNumber::kSbpEnablePageShadowing, nullptr);
+        return UtilVmCall(HypercallNumber::kShEnablePageShadowing, nullptr);
       },
       nullptr);
 }
@@ -221,7 +222,7 @@ _Use_decl_annotations_ EXTERN_C NTSTATUS ShDisableHooks() {
 
   return UtilForEachProcessor(
       [](void*) {
-        return UtilVmCall(HypercallNumber::kSbpDisablePageShadowing, nullptr);
+        return UtilVmCall(HypercallNumber::kShDisablePageShadowing, nullptr);
       },
       nullptr);
 }
@@ -342,7 +343,7 @@ ShpCreateHookInformation(SharedShadowHookData* shared_sh_data, void* address,
     info->shadow_page_base_for_rw = reusable_info->shadow_page_base_for_rw;
     info->shadow_page_base_for_exec = reusable_info->shadow_page_base_for_exec;
   } else {
-    // This hook is for a page that is not currently have any hooks (ie not 
+    // This hook is for a page that is not currently have any hooks (ie not
     // shadowed). Creates shadow pages.
     info->shadow_page_base_for_rw = std::make_shared<Page>();
     info->shadow_page_base_for_exec = std::make_shared<Page>();
@@ -429,8 +430,9 @@ _Use_decl_annotations_ EXTERN_C static SIZE_T ShpGetInstructionSize(
 
   static const auto kLongestInstSize = 15;
   cs_insn* instructions = nullptr;
-  const auto count = cs_disasm(handle, reinterpret_cast<uint8_t*>(address), kLongestInstSize,
-    reinterpret_cast<uint64_t>(address), 1, &instructions);
+  const auto count =
+      cs_disasm(handle, reinterpret_cast<uint8_t*>(address), kLongestInstSize,
+                reinterpret_cast<uint64_t>(address), 1, &instructions);
   if (count == 0) {
     cs_close(&handle);
     KeRestoreFloatingPointState(&float_save);
@@ -577,7 +579,7 @@ _Use_decl_annotations_ static void ShpSaveLastHookInfo(
   sh_data->last_hook_info = &info;
 }
 
-// Retrieves the last HookInformation 
+// Retrieves the last HookInformation
 _Use_decl_annotations_ static const HookInformation* ShpRestoreLastHookInfo(
     ShadowHookData* sh_data) {
   NT_ASSERT(sh_data->last_hook_info);
