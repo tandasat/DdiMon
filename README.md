@@ -201,21 +201,22 @@ The following are a call hierarchy with regard to sequences explained above.
 Implemented Hook Handlers
 --------------------------
 - ExQueueWorkItem
-The hook handler prints out given parameters when a specified work item routine
-is not inside any images.
+      - The hook handler prints out given parameters when a specified work 
+        item routine is not inside any images.
 
 - ExAllocatePoolWithTag
-The hook handler prints out given parameters and a return value of
-ExAllocatePoolWithTag() when it is called from an address where is not backed by
-any images.
+      - The hook handler prints out given parameters and a return value of
+        ExAllocatePoolWithTag() when it is called from an address where is
+        not backed by any images.
 
 - ExFreePool and ExFreePoolWithTag
-The hook handlers print out given parameters when they are called from addresses
-where are not backed by any images.
+      - The hook handlers print out given parameters when they are called
+        from addresses where are not backed by any images.
 
 - NtQuerySystemInformation
-The hook handler takes out an entry for "cmd.exe" from returned process
-information so that cmd.exe is not listed by process enumeration.
+      - The hook handler takes out an entry for "cmd.exe" from returned 
+        process information so that cmd.exe is not listed by process 
+        enumeration.
 
 The easiest way to see those logs is installing NoImage.sys.
 - https://github.com/tandasat/MemoryMon/tree/master/MemoryMonTest
