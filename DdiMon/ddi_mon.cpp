@@ -285,8 +285,7 @@ _Use_decl_annotations_ EXTERN_C static bool DdimonpEnumExportedSymbolsCallback(
 
     // Yes, install a hook to the export
     if (!ShInstallHook(reinterpret_cast<SharedShadowHookData*>(context),
-                       reinterpret_cast<void*>(export_address), &target,
-                       export_name)) {
+                       reinterpret_cast<void*>(export_address), &target)) {
       // This is an error which should not happen
       DdimonpFreeAllocatedTrampolineRegions();
       return false;

@@ -69,8 +69,7 @@ _IRQL_requires_min_(DISPATCH_LEVEL) void ShVmCallDisablePageShadowing(
 
 _IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C
     bool ShInstallHook(_In_ SharedShadowHookData* shared_sh_data,
-                       _In_ void* address, _In_ ShadowHookTarget* target,
-                       _In_ const char* name);
+                       _In_ void* address, _In_ ShadowHookTarget* target);
 
 _IRQL_requires_min_(DISPATCH_LEVEL) bool ShHandleBreakpoint(
     _In_ ShadowHookData* sh_data,

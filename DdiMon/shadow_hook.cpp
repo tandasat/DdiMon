@@ -17,7 +17,6 @@
 #include <vector>
 #include <memory>
 #include <algorithm>
-#include <array>
 #include "cs_driver_mm.h"
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -56,9 +55,6 @@ struct HookInformation {
   // Phyisical address of the above two copied pages
   ULONG64 pa_base_for_rw;
   ULONG64 pa_base_for_exec;
-
-  // A name of breakpont (a DDI name)
-  std::array<char, 64> name;
 };
 
 // Data structure shared across all processors
@@ -100,10 +96,11 @@ static_assert(sizeof(TrampolineCode) == 7, "Size check");
 // prototypes
 //
 
-_IRQL_requires_max_(PASSIVE_LEVEL) static std::
-    unique_ptr<HookInformation> ShpCreateHookInformation(
-        _In_ SharedShadowHookData* shared_sh_data, _In_ void* address,
-        _In_ ShadowHookTarget* target, _In_ const char* name);
+_IRQL_requires_max_(PASSIVE_LEVEL) static std::unique_ptr<
+    HookInformation> ShpCreateHookInformation(_In_ SharedShadowHookData*
+                                                  shared_sh_data,
+                                              _In_ void* address,
+                                              _In_ ShadowHookTarget* target);
 
 _IRQL_requires_max_(PASSIVE_LEVEL) _Success_(return ) EXTERN_C
     static bool ShpSetupInlineHook(_In_ void* patch_address,
@@ -166,6 +163,7 @@ static bool ShpIsShadowHookActive(
 // implementations
 //
 
+// Allocates per-processor shadow hook data
 _Use_decl_annotations_ EXTERN_C ShadowHookData* ShAllocateShadowHookData() {
   PAGED_CODE();
 
@@ -174,7 +172,7 @@ _Use_decl_annotations_ EXTERN_C ShadowHookData* ShAllocateShadowHookData() {
   return p;
 }
 
-// Terminates DdiMon
+// Frees per-processor shadow hook data
 _Use_decl_annotations_ EXTERN_C void ShFreeShadowHookData(
     ShadowHookData* sh_data) {
   PAGED_CODE();
@@ -182,7 +180,7 @@ _Use_decl_annotations_ EXTERN_C void ShFreeShadowHookData(
   delete sh_data;
 }
 
-// Initializes DdiMon
+// Allocates processor-shared shadow hook data
 _Use_decl_annotations_ EXTERN_C SharedShadowHookData*
 ShAllocateSharedShaowHookData() {
   PAGED_CODE();
@@ -196,7 +194,7 @@ ShAllocateSharedShaowHookData() {
   return p;
 }
 
-//
+// Frees processor-shared shadow hook data
 _Use_decl_annotations_ EXTERN_C void ShFreeSharedShadowHookData(
     SharedShadowHookData* shared_sh_data) {
   PAGED_CODE();
@@ -307,11 +305,11 @@ _Use_decl_annotations_ void ShHandleEptViolation(
 // Set up inline hook at the address without activating it
 _Use_decl_annotations_ EXTERN_C bool ShInstallHook(
     SharedShadowHookData* shared_sh_data, void* address,
-    ShadowHookTarget* target, const char* name) {
+    ShadowHookTarget* target) {
   PAGED_CODE();
 
   auto info = ShpCreateHookInformation(
-      shared_sh_data, reinterpret_cast<void*>(address), target, name);
+      shared_sh_data, reinterpret_cast<void*>(address), target);
   if (!info) {
     return false;
   }
@@ -335,7 +333,7 @@ _Use_decl_annotations_ EXTERN_C bool ShInstallHook(
 // Creates or reuses a couple of copied pages and initializes HookInformation
 _Use_decl_annotations_ static std::unique_ptr<HookInformation>
 ShpCreateHookInformation(SharedShadowHookData* shared_sh_data, void* address,
-                         ShadowHookTarget* target, const char* name) {
+                         ShadowHookTarget* target) {
   auto info = std::make_unique<HookInformation>();
   auto reusable_info = ShpFindPatchInfoByPage(shared_sh_data, address);
   if (reusable_info) {
@@ -356,7 +354,6 @@ ShpCreateHookInformation(SharedShadowHookData* shared_sh_data, void* address,
   info->pa_base_for_rw = UtilPaFromVa(info->shadow_page_base_for_rw->page);
   info->pa_base_for_exec = UtilPaFromVa(info->shadow_page_base_for_exec->page);
   info->handler = target->handler;
-  RtlCopyMemory(info->name.data(), name, info->name.size() - 1);
   return info;
 }
 
