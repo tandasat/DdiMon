@@ -40,7 +40,7 @@ On the x64 platform, you have to enable test signing to install the driver.
 To do that, open the command prompt with the administrator privilege and type
 the following command, and then restart the system to activate the change:
 
-    bcdedit /set testsigning on
+    >bcdedit /set testsigning on
 
 To install and uninstall the driver, use the 'sc' command. For installation:
 
@@ -56,10 +56,9 @@ And for uninstallation:
 Note that the system must support the Intel VT-x and EPT technology to
 successfully install the driver.
 
-To install the driver on a virtual machine on VMware Workstation, see a "Using
-VMware Workstation" section in the HyperPlatform User's Documents found in its
-project page.
-- https://github.com/tandasat/HyperPlatform/tree/master/Documents
+To install the driver on a virtual machine on VMware Workstation, see an "Using
+VMware Workstation" section in the HyperPlatform User Document.
+- http://tandasat.github.io/HyperPlatform/userdocument/
 
 
 Output
