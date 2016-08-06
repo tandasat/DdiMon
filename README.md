@@ -36,6 +36,11 @@ more details of HyperPlatform:
 
 Installation and Uninstallation
 --------------------------------
+Clone full source code from Github with below command and compile it with Visual
+Studio 2015.
+
+    $ git clone --recursive git@github.com:tandasat/DdiMon.git
+
 On the x64 platform, you have to enable test signing to install the driver.
 To do that, open the command prompt with the administrator privilege and type
 the following command, and then restart the system to activate the change:
