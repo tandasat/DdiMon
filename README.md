@@ -36,8 +36,8 @@ more details of HyperPlatform:
 
 Installation and Uninstallation
 --------------------------------
-Clone full source code from Github with below command and compile it with Visual
-Studio 2015.
+Clone full source code from Github with a below command and compile it on Visual
+Studio.
 
     $ git clone --recursive https://github.com/tandasat/DdiMon.git
 
