@@ -1,11 +1,11 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio 14
-VisualStudioVersion = 14.0.25123.0
+VisualStudioVersion = 14.0.25420.1
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "DdiMon", "DdiMon\DdiMon.vcxproj", "{B20D17DD-453E-4420-B691-4EB4B9AE3A15}"
 	ProjectSection(ProjectDependencies) = postProject
-		{4789478F-9738-40BB-9CD0-D2034A2AC35B} = {4789478F-9738-40BB-9CD0-D2034A2AC35B}
+		{FE197816-EF84-4E8D-B29D-E0A6BA2B144B} = {FE197816-EF84-4E8D-B29D-E0A6BA2B144B}
 	EndProjectSection
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{3F4B87F6-9967-4C6F-B1A4-010B6C19ED8D}"
@@ -17,7 +17,7 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution 
 		README.md = README.md
 	EndProjectSection
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "capstone_static_driver", "capstone\msvc\capstone_static\capstone_static_driver.vcxproj", "{4789478F-9738-40BB-9CD0-D2034A2AC35B}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "capstone_static_winkernel", "capstone\msvc\capstone_static_winkernel\capstone_static_winkernel.vcxproj", "{FE197816-EF84-4E8D-B29D-E0A6BA2B144B}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -39,14 +39,18 @@ Global
 		{B20D17DD-453E-4420-B691-4EB4B9AE3A15}.Release|x86.ActiveCfg = Release|Win32
 		{B20D17DD-453E-4420-B691-4EB4B9AE3A15}.Release|x86.Build.0 = Release|Win32
 		{B20D17DD-453E-4420-B691-4EB4B9AE3A15}.Release|x86.Deploy.0 = Release|Win32
-		{4789478F-9738-40BB-9CD0-D2034A2AC35B}.Debug|x64.ActiveCfg = Debug_WDK|x64
-		{4789478F-9738-40BB-9CD0-D2034A2AC35B}.Debug|x64.Build.0 = Debug_WDK|x64
-		{4789478F-9738-40BB-9CD0-D2034A2AC35B}.Debug|x86.ActiveCfg = Debug_WDK|Win32
-		{4789478F-9738-40BB-9CD0-D2034A2AC35B}.Debug|x86.Build.0 = Debug_WDK|Win32
-		{4789478F-9738-40BB-9CD0-D2034A2AC35B}.Release|x64.ActiveCfg = Release_WDK|x64
-		{4789478F-9738-40BB-9CD0-D2034A2AC35B}.Release|x64.Build.0 = Release_WDK|x64
-		{4789478F-9738-40BB-9CD0-D2034A2AC35B}.Release|x86.ActiveCfg = Release_WDK|Win32
-		{4789478F-9738-40BB-9CD0-D2034A2AC35B}.Release|x86.Build.0 = Release_WDK|Win32
+		{FE197816-EF84-4E8D-B29D-E0A6BA2B144B}.Debug|x64.ActiveCfg = Debug|x64
+		{FE197816-EF84-4E8D-B29D-E0A6BA2B144B}.Debug|x64.Build.0 = Debug|x64
+		{FE197816-EF84-4E8D-B29D-E0A6BA2B144B}.Debug|x64.Deploy.0 = Debug|x64
+		{FE197816-EF84-4E8D-B29D-E0A6BA2B144B}.Debug|x86.ActiveCfg = Debug|Win32
+		{FE197816-EF84-4E8D-B29D-E0A6BA2B144B}.Debug|x86.Build.0 = Debug|Win32
+		{FE197816-EF84-4E8D-B29D-E0A6BA2B144B}.Debug|x86.Deploy.0 = Debug|Win32
+		{FE197816-EF84-4E8D-B29D-E0A6BA2B144B}.Release|x64.ActiveCfg = Release|x64
+		{FE197816-EF84-4E8D-B29D-E0A6BA2B144B}.Release|x64.Build.0 = Release|x64
+		{FE197816-EF84-4E8D-B29D-E0A6BA2B144B}.Release|x64.Deploy.0 = Release|x64
+		{FE197816-EF84-4E8D-B29D-E0A6BA2B144B}.Release|x86.ActiveCfg = Release|Win32
+		{FE197816-EF84-4E8D-B29D-E0A6BA2B144B}.Release|x86.Build.0 = Release|Win32
+		{FE197816-EF84-4E8D-B29D-E0A6BA2B144B}.Release|x86.Deploy.0 = Release|Win32
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

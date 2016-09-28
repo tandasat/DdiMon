@@ -54,7 +54,13 @@
     <ClCompile Include="shadow_hook.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="cs_driver_mm.c">
+    <ClCompile Include="..\HyperPlatform\HyperPlatform\global_object.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\HyperPlatform\HyperPlatform\hotplug_callback.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\HyperPlatform\HyperPlatform\power_callback.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
@@ -101,7 +107,13 @@
     <ClInclude Include="shadow_hook.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="cs_driver_mm.h">
+    <ClInclude Include="..\HyperPlatform\HyperPlatform\global_object.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\HyperPlatform\HyperPlatform\hotplug_callback.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\HyperPlatform\HyperPlatform\power_callback.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

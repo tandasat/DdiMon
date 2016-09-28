@@ -119,7 +119,7 @@ static NTSTATUS DdimonpHandleNtQuerySystemInformation(
 
 // Defines where to install shadow hooks and their handlers
 //
-// Because of simplified imlementation of DdiMon, DdiMon is unable to handle any
+// Because of simplified implementation of DdiMon, DdiMon is unable to handle any
 // of following exports properly:
 //  - already unmapped exports (eg, ones on the INIT section) because it no
 //    longer exists on memory
@@ -131,8 +131,8 @@ static NTSTATUS DdimonpHandleNtQuerySystemInformation(
 // Also the following care should be taken:
 //  - Function parameters may be an user-address space pointer and not
 //    trusted. Even a kernel-address space pointer should not be trusted for
-//    production level security. Vefity and capture all contents from user
-//    surpplied address to VMM, then use them.
+//    production level security. Verity and capture all contents from user
+//    supplied address to VMM, then use them.
 static ShadowHookTarget g_ddimonp_hook_targets[] = {
     {
         RTL_CONSTANT_STRING(L"EXQUEUEWORKITEM"), DdimonpHandleExQueueWorkItem,
@@ -163,8 +163,6 @@ static ShadowHookTarget g_ddimonp_hook_targets[] = {
 // Initializes DdiMon
 _Use_decl_annotations_ EXTERN_C NTSTATUS
 DdimonInitialization(SharedShadowHookData* shared_sh_data) {
-  HYPERPLATFORM_COMMON_DBG_BREAK();
-
   // Get a base address of ntoskrnl
   auto nt_base = UtilPcToFileHeader(KdDebuggerEnabled);
   if (!nt_base) {
@@ -193,10 +191,9 @@ DdimonInitialization(SharedShadowHookData* shared_sh_data) {
 // Terminates DdiMon
 _Use_decl_annotations_ EXTERN_C void DdimonTermination() {
   PAGED_CODE();
-  HYPERPLATFORM_COMMON_DBG_BREAK();
 
   ShDisableHooks();
-  UtilSleep(500);
+  UtilSleep(1000);
   DdimonpFreeAllocatedTrampolineRegions();
   HYPERPLATFORM_LOG_INFO("DdiMon has been terminated.");
 }
@@ -262,7 +259,7 @@ _Use_decl_annotations_ EXTERN_C static bool DdimonpEnumExportedSymbolsCallback(
   auto export_address = base_address + functions[ord];
   auto export_name = reinterpret_cast<const char*>(base_address + names[index]);
 
-  // Check if an export is forwared one? If so, ignore it.
+  // Check if an export is forwarded one? If so, ignore it.
   if (UtilIsInBounds(export_address, directory_base, directory_end)) {
     return true;
   }

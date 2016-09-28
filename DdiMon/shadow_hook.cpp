@@ -17,7 +17,7 @@
 #include <vector>
 #include <memory>
 #include <algorithm>
-#include "cs_driver_mm.h"
+#include "capstone.h"
 
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -52,7 +52,7 @@ struct HookInformation {
   std::shared_ptr<Page> shadow_page_base_for_rw;
   std::shared_ptr<Page> shadow_page_base_for_exec;
 
-  // Phyisical address of the above two copied pages
+  // Physical address of the above two copied pages
   ULONG64 pa_base_for_rw;
   ULONG64 pa_base_for_exec;
 };
@@ -185,10 +185,6 @@ _Use_decl_annotations_ EXTERN_C SharedShadowHookData*
 ShAllocateSharedShaowHookData() {
   PAGED_CODE();
 
-  if (cs_driver_mm_init() != CS_ERR_OK) {
-    return nullptr;
-  }
-
   auto p = new SharedShadowHookData();
   RtlFillMemory(p, sizeof(SharedShadowHookData), 0);
   return p;
@@ -229,7 +225,7 @@ _Use_decl_annotations_ EXTERN_C NTSTATUS ShDisableHooks() {
 // Enables page shadowing for all hooks
 _Use_decl_annotations_ NTSTATUS ShEnablePageShadowing(
     EptData* ept_data, const SharedShadowHookData* shared_sh_data) {
-  HYPERPLATFORM_COMMON_DBG_BREAK();
+  //HYPERPLATFORM_COMMON_DBG_BREAK();
 
   for (auto& info : shared_sh_data->hooks) {
     ShpEnablePageShadowingForExec(*info, ept_data);
@@ -240,7 +236,7 @@ _Use_decl_annotations_ NTSTATUS ShEnablePageShadowing(
 // Disables page shadowing for all hooks
 _Use_decl_annotations_ void ShVmCallDisablePageShadowing(
     EptData* ept_data, const SharedShadowHookData* shared_sh_data) {
-  HYPERPLATFORM_COMMON_DBG_BREAK();
+  //HYPERPLATFORM_COMMON_DBG_BREAK();
 
   for (auto& info : shared_sh_data->hooks) {
     ShpDisablePageShadowing(*info, ept_data);
@@ -337,12 +333,12 @@ ShpCreateHookInformation(SharedShadowHookData* shared_sh_data, void* address,
   auto info = std::make_unique<HookInformation>();
   auto reusable_info = ShpFindPatchInfoByPage(shared_sh_data, address);
   if (reusable_info) {
-    // Found an existing HookInformation object targetting the same page as this
+    // Found an existing HookInformation object targeting the same page as this
     // one. re-use shadow pages.
     info->shadow_page_base_for_rw = reusable_info->shadow_page_base_for_rw;
     info->shadow_page_base_for_exec = reusable_info->shadow_page_base_for_exec;
   } else {
-    // This hook is for a page that is not currently have any hooks (ie not
+    // This hook is for a page that is not currently have any hooks (i.e., not
     // shadowed). Creates shadow pages.
     info->shadow_page_base_for_rw = std::make_shared<Page>();
     info->shadow_page_base_for_exec = std::make_shared<Page>();
@@ -357,7 +353,7 @@ ShpCreateHookInformation(SharedShadowHookData* shared_sh_data, void* address,
   return info;
 }
 
-// Builds a trampoline code for calling an orignal code and embeds 0xcc on the
+// Builds a trampoline code for calling an original code and embeds 0xcc on the
 // shadow_exec_page
 _Use_decl_annotations_ EXTERN_C static bool ShpSetupInlineHook(
     void* patch_address, UCHAR* shadow_exec_page, void** original_call_ptr) {
@@ -381,7 +377,7 @@ _Use_decl_annotations_ EXTERN_C static bool ShpSetupInlineHook(
     return false;
   }
 
-  // Copy original code and embed jmp code following original code
+  // Copy original code and embed jump code following original code
   RtlCopyMemory(original_call, patch_address, patch_size);
 #pragma warning(push)
 #pragma warning(disable : 6386)
@@ -506,7 +502,7 @@ _Use_decl_annotations_ static void ShpEnablePageShadowingForExec(
   const auto ept_pt_entry =
       EptGetEptPtEntry(ept_data, UtilPaFromVa(info.patch_address));
 
-  // Allow the VMM to redirect read and write access to the address by dening
+  // Allow the VMM to redirect read and write access to the address by denying
   // those accesses and handling them on EPT violation
   ept_pt_entry->fields.write_access = false;
   ept_pt_entry->fields.read_access = false;
@@ -515,7 +511,7 @@ _Use_decl_annotations_ static void ShpEnablePageShadowingForExec(
   // that has an actual breakpoint to the guest.
   ept_pt_entry->fields.physial_address = UtilPfnFromPa(info.pa_base_for_exec);
 
-  UtilInveptAll();
+  UtilInveptGlobal();
 }
 
 // Show a shadowed page for read and write
@@ -531,7 +527,7 @@ _Use_decl_annotations_ static void ShpEnablePageShadowingForRW(
   ept_pt_entry->fields.read_access = true;
   ept_pt_entry->fields.physial_address = UtilPfnFromPa(info.pa_base_for_rw);
 
-  UtilInveptAll();
+  UtilInveptGlobal();
 }
 
 // Stop showing a shadow page
@@ -543,7 +539,7 @@ _Use_decl_annotations_ static void ShpDisablePageShadowing(
   ept_pt_entry->fields.read_access = true;
   ept_pt_entry->fields.physial_address = UtilPfnFromPa(pa_base);
 
-  UtilInveptAll();
+  UtilInveptGlobal();
 }
 
 // Set MTF on the current processor
@@ -577,7 +573,7 @@ _Use_decl_annotations_ static bool ShpIsShadowHookActive(
   return !!(shared_sh_data);
 }
 
-// Allocates a non-paged, page-alined page. Issues bug check on failure
+// Allocates a non-paged, page-aligned page. Issues bug check on failure
 Page::Page()
     : page(reinterpret_cast<UCHAR*>(ExAllocatePoolWithTag(
           NonPagedPool, PAGE_SIZE, kHyperPlatformCommonPoolTag))) {
