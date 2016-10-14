@@ -119,8 +119,8 @@ static NTSTATUS DdimonpHandleNtQuerySystemInformation(
 
 // Defines where to install shadow hooks and their handlers
 //
-// Because of simplified implementation of DdiMon, DdiMon is unable to handle any
-// of following exports properly:
+// Because of simplified implementation of DdiMon, DdiMon is unable to handle
+// any of following exports properly:
 //  - already unmapped exports (eg, ones on the INIT section) because it no
 //    longer exists on memory
 //  - exported data because setting 0xcc does not make any sense in this case
@@ -134,25 +134,25 @@ static NTSTATUS DdimonpHandleNtQuerySystemInformation(
 //    production level security. Verity and capture all contents from user
 //    supplied address to VMM, then use them.
 static ShadowHookTarget g_ddimonp_hook_targets[] = {
-    {
-        RTL_CONSTANT_STRING(L"EXQUEUEWORKITEM"), DdimonpHandleExQueueWorkItem,
-        nullptr,
-    },
+    //{
+    //    RTL_CONSTANT_STRING(L"EXQUEUEWORKITEM"), DdimonpHandleExQueueWorkItem,
+    //    nullptr,
+    //},
     {
         RTL_CONSTANT_STRING(L"EXALLOCATEPOOLWITHTAG"),
         DdimonpHandleExAllocatePoolWithTag, nullptr,
     },
-    {
-        RTL_CONSTANT_STRING(L"EXFREEPOOL"), DdimonpHandleExFreePool, nullptr,
-    },
-    {
-        RTL_CONSTANT_STRING(L"EXFREEPOOLWITHTAG"),
-        DdimonpHandleExFreePoolWithTag, nullptr,
-    },
-    {
-        RTL_CONSTANT_STRING(L"NTQUERYSYSTEMINFORMATION"),
-        DdimonpHandleNtQuerySystemInformation, nullptr,
-    },
+    //{
+    //    RTL_CONSTANT_STRING(L"EXFREEPOOL"), DdimonpHandleExFreePool, nullptr,
+    //},
+    //{
+    //    RTL_CONSTANT_STRING(L"EXFREEPOOLWITHTAG"),
+    //    DdimonpHandleExFreePoolWithTag, nullptr,
+    //},
+    //{
+    //    RTL_CONSTANT_STRING(L"NTQUERYSYSTEMINFORMATION"),
+    //    DdimonpHandleNtQuerySystemInformation, nullptr,
+    //},
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -390,9 +390,9 @@ _Use_decl_annotations_ static PVOID DdimonpHandleExAllocatePoolWithTag(
 
   // Is inside image?
   auto return_addr = _ReturnAddress();
-  if (UtilPcToFileHeader(return_addr)) {
-    return result;
-  }
+  // if (UtilPcToFileHeader(return_addr)) {
+  //  return result;
+  //}
 
   HYPERPLATFORM_LOG_INFO_SAFE(
       "%p: ExAllocatePoolWithTag(POOL_TYPE= %08x, NumberOfBytes= %08X, Tag= "
