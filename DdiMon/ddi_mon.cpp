@@ -13,7 +13,8 @@
 #include "../HyperPlatform/HyperPlatform/log.h"
 #include "../HyperPlatform/HyperPlatform/util.h"
 #include "../HyperPlatform/HyperPlatform/ept.h"
-#include "../HyperPlatform/HyperPlatform/kernel_stl.h"
+#undef _HAS_EXCEPTIONS
+#define _HAS_EXCEPTIONS 0
 #include <array>
 #include "shadow_hook.h"
 

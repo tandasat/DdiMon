@@ -83,9 +83,6 @@
     <ClInclude Include="..\HyperPlatform\HyperPlatform\ia32_type.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\HyperPlatform\HyperPlatform\kernel_stl.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="..\HyperPlatform\HyperPlatform\log.h">
       <Filter>Header Files</Filter>
     </ClInclude>

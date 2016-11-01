@@ -157,7 +157,6 @@
     <ClInclude Include="..\HyperPlatform\HyperPlatform\global_object.h" />
     <ClInclude Include="..\HyperPlatform\HyperPlatform\hotplug_callback.h" />
     <ClInclude Include="..\HyperPlatform\HyperPlatform\ia32_type.h" />
-    <ClInclude Include="..\HyperPlatform\HyperPlatform\kernel_stl.h" />
     <ClInclude Include="..\HyperPlatform\HyperPlatform\log.h" />
     <ClInclude Include="..\HyperPlatform\HyperPlatform\performance.h" />
     <ClInclude Include="..\HyperPlatform\HyperPlatform\perf_counter.h" />
