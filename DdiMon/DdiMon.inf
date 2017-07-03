@@ -12,6 +12,7 @@ DriverVer= ; TODO: set DriverVer in stampinf property pages
 
 [DestinationDirs]
 DefaultDestDir = 12
+DdiMon_Device_CoInstaller_CopyFiles = 11
 
 ; ================= Class section =====================
 
@@ -27,6 +28,7 @@ HKR,,Icon,,-5
 
 [SourceDisksFiles]
 DdiMon.sys  = 1,,
+WdfCoInstaller$KMDFCOINSTALLERVERSION$.dll=1 ; make sure the number matches with SourceDisksNames
 
 ;*****************************************
 ; Install Section
@@ -60,9 +62,6 @@ ServiceBinary  = %12%\DdiMon.sys
 ;--- DdiMon_Device Coinstaller installation ------
 ;
 
-[DestinationDirs]
-DdiMon_Device_CoInstaller_CopyFiles = 11
-
 [DdiMon_Device.NT.CoInstallers]
 AddReg=DdiMon_Device_CoInstaller_AddReg
 CopyFiles=DdiMon_Device_CoInstaller_CopyFiles
@@ -72,9 +71,6 @@ HKR,,CoInstallers32,0x00010000, "WdfCoInstaller$KMDFCOINSTALLERVERSION$.dll,WdfC
 
 [DdiMon_Device_CoInstaller_CopyFiles]
 WdfCoInstaller$KMDFCOINSTALLERVERSION$.dll
-
-[SourceDisksFiles]
-WdfCoInstaller$KMDFCOINSTALLERVERSION$.dll=1 ; make sure the number matches with SourceDisksNames
 
 [DdiMon_Device.NT.Wdf]
 KmdfService =  DdiMon, DdiMon_wdfsect
