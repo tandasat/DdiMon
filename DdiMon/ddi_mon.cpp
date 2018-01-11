@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2016, tandasat. All rights reserved.
+// Copyright (c) 2015-2018, Satoshi Tanda. All rights reserved.
 // Use of this source code is governed by a MIT-style license that can be
 // found in the LICENSE file.
 
@@ -120,8 +120,8 @@ static NTSTATUS DdimonpHandleNtQuerySystemInformation(
 
 // Defines where to install shadow hooks and their handlers
 //
-// Because of simplified implementation of DdiMon, DdiMon is unable to handle any
-// of following exports properly:
+// Because of simplified implementation of DdiMon, DdiMon is unable to handle
+// any of following exports properly:
 //  - already unmapped exports (eg, ones on the INIT section) because it no
 //    longer exists on memory
 //  - exported data because setting 0xcc does not make any sense in this case
@@ -136,23 +136,29 @@ static NTSTATUS DdimonpHandleNtQuerySystemInformation(
 //    supplied address to VMM, then use them.
 static ShadowHookTarget g_ddimonp_hook_targets[] = {
     {
-        RTL_CONSTANT_STRING(L"EXQUEUEWORKITEM"), DdimonpHandleExQueueWorkItem,
+        RTL_CONSTANT_STRING(L"EXQUEUEWORKITEM"),
+        DdimonpHandleExQueueWorkItem,
         nullptr,
     },
     {
         RTL_CONSTANT_STRING(L"EXALLOCATEPOOLWITHTAG"),
-        DdimonpHandleExAllocatePoolWithTag, nullptr,
+        DdimonpHandleExAllocatePoolWithTag,
+        nullptr,
     },
     {
-        RTL_CONSTANT_STRING(L"EXFREEPOOL"), DdimonpHandleExFreePool, nullptr,
+        RTL_CONSTANT_STRING(L"EXFREEPOOL"),
+        DdimonpHandleExFreePool,
+        nullptr,
     },
     {
         RTL_CONSTANT_STRING(L"EXFREEPOOLWITHTAG"),
-        DdimonpHandleExFreePoolWithTag, nullptr,
+        DdimonpHandleExFreePoolWithTag,
+        nullptr,
     },
     {
         RTL_CONSTANT_STRING(L"NTQUERYSYSTEMINFORMATION"),
-        DdimonpHandleNtQuerySystemInformation, nullptr,
+        DdimonpHandleNtQuerySystemInformation,
+        nullptr,
     },
 };
 
@@ -288,8 +294,8 @@ _Use_decl_annotations_ EXTERN_C static bool DdimonpEnumExportedSymbolsCallback(
       DdimonpFreeAllocatedTrampolineRegions();
       return false;
     }
-    HYPERPLATFORM_LOG_INFO("Hook has been installed at %p %s.", export_address,
-                           export_name);
+    HYPERPLATFORM_LOG_INFO("Hook has been installed at %016Ix %s.",
+                           export_address, export_name);
   }
   return true;
 }
@@ -396,7 +402,7 @@ _Use_decl_annotations_ static PVOID DdimonpHandleExAllocatePoolWithTag(
   }
 
   HYPERPLATFORM_LOG_INFO_SAFE(
-      "%p: ExAllocatePoolWithTag(POOL_TYPE= %08x, NumberOfBytes= %08X, Tag= "
+      "%p: ExAllocatePoolWithTag(POOL_TYPE= %08x, NumberOfBytes= %08Ix, Tag= "
       "%s) => %p",
       return_addr, pool_type, number_of_bytes, DdimonpTagToString(tag).data(),
       result);
