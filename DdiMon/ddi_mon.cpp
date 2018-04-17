@@ -106,9 +106,9 @@ static NTSTATUS DdimonpHandleNtQuerySystemInformation(
     _Out_opt_ PULONG ReturnLength);
 
 #if defined(ALLOC_PRAGMA)
-#pragma alloc_text(INIT, DdimonInitialization)
-#pragma alloc_text(INIT, DdimonpEnumExportedSymbols)
-#pragma alloc_text(INIT, DdimonpEnumExportedSymbolsCallback)
+#pragma alloc_text(PAGE, DdimonInitialization)
+#pragma alloc_text(PAGE, DdimonpEnumExportedSymbols)
+#pragma alloc_text(PAGE, DdimonpEnumExportedSymbolsCallback)
 #pragma alloc_text(PAGE, DdimonTermination)
 #pragma alloc_text(PAGE, DdimonpFreeAllocatedTrampolineRegions)
 #endif
