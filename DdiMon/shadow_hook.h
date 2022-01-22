@@ -82,7 +82,7 @@ _IRQL_requires_min_(DISPATCH_LEVEL) void ShHandleMonitorTrapFlag(
 _IRQL_requires_min_(DISPATCH_LEVEL) void ShHandleEptViolation(
     _In_ ShadowHookData* sh_data,
     _In_ const SharedShadowHookData* shared_sh_data, _In_ EptData* ept_data,
-    _In_ void* fault_va);
+    _In_opt_ void* fault_va);
 
 ////////////////////////////////////////////////////////////////////////////////
 //

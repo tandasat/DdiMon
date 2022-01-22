@@ -19,11 +19,6 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <Inf Include="DdiMon.inf">
-      <Filter>Driver Files</Filter>
-    </Inf>
-  </ItemGroup>
-  <ItemGroup>
     <ClCompile Include="ddi_mon.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>

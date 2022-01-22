@@ -170,6 +170,8 @@ static ShadowHookTarget g_ddimonp_hook_targets[] = {
 // Initializes DdiMon
 _Use_decl_annotations_ EXTERN_C NTSTATUS
 DdimonInitialization(SharedShadowHookData* shared_sh_data) {
+  PAGED_CODE();
+
   // Get a base address of ntoskrnl
   auto nt_base = UtilPcToFileHeader(KdDebuggerEnabled);
   if (!nt_base) {

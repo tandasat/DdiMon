@@ -115,7 +115,7 @@ _IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C static TrampolineCode
     ShpMakeTrampolineCode(_In_ void* hook_handler);
 
 static HookInformation* ShpFindPatchInfoByPage(
-    _In_ const SharedShadowHookData* shared_sh_data, _In_ void* address);
+    _In_ const SharedShadowHookData* shared_sh_data, _In_opt_ void* address);
 
 static HookInformation* ShpFindPatchInfoByAddress(
     _In_ const SharedShadowHookData* shared_sh_data, _In_ void* address);
@@ -163,6 +163,19 @@ static bool ShpIsShadowHookActive(
 //
 // implementations
 //
+
+// Workarounds https://github.com/tandasat/DdiMon/issues/34
+EXTERN_C
+_ACRTIMP void __cdecl _invoke_watson(_In_opt_z_ wchar_t const*,
+                                     _In_opt_z_ wchar_t const*,
+                                     _In_opt_z_ wchar_t const*,
+                                     _In_ unsigned int,
+                                     _In_ uintptr_t) {}
+
+// Workarounds https://github.com/tandasat/DdiMon/issues/34
+namespace std {
+_Prhand _Raise_handler;
+}
 
 // Allocates per-processor shadow hook data
 _Use_decl_annotations_ EXTERN_C ShadowHookData* ShAllocateShadowHookData() {
